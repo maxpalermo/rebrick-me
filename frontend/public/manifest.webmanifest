@@ -1,0 +1,10 @@
+{
+  "name": "Brick Scanner",
+  "short_name": "Bricks",
+  "description": "Fotografa i tuoi pezzi LEGO e scopri cosa puoi costruire",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f4f6",
+  "theme_color": "#d01012",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

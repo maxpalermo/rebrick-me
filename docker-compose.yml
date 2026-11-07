@@ -1,0 +1,15 @@
+services:
+  brick-scanner:
+    build: .
+    image: brick-scanner:latest
+    container_name: brick-scanner
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - DATA_DIR=/data
+    volumes:
+      - ./data:/data
