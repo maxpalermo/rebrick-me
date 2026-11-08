@@ -13,19 +13,32 @@ log = logging.getLogger(__name__)
 
 USER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+-- Named groups of pieces ("librerie"): locations, projects, whatever the user wants.
+-- Tombstoned (deleted=1) rows keep their name so synced inventory stays labelled.
+CREATE TABLE IF NOT EXISTS bins (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    device_id TEXT NOT NULL
+);
 -- Each device owns its own rows; the total quantity is the SUM over devices.
 -- Rows are only written by their owner device, so sync is a conflict-free merge.
 CREATE TABLE IF NOT EXISTS inventory (
     part_num TEXT NOT NULL,
     color_id INTEGER NOT NULL,
     device_id TEXT NOT NULL,
+    bin TEXT NOT NULL DEFAULT 'default',
     quantity INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL,
-    PRIMARY KEY (part_num, color_id, device_id)
+    PRIMARY KEY (part_num, color_id, device_id, bin)
 );
 CREATE VIEW IF NOT EXISTS inventory_total AS
     SELECT part_num, color_id, SUM(quantity) AS quantity, MAX(updated_at) AS updated_at
     FROM inventory GROUP BY part_num, color_id HAVING SUM(quantity) > 0;
+CREATE VIEW IF NOT EXISTS inventory_by_bin AS
+    SELECT part_num, color_id, bin, SUM(quantity) AS quantity, MAX(updated_at) AS updated_at
+    FROM inventory GROUP BY part_num, color_id, bin HAVING SUM(quantity) > 0;
 CREATE TABLE IF NOT EXISTS manuals (
     id TEXT PRIMARY KEY,
     set_num TEXT NOT NULL,
@@ -91,6 +104,79 @@ def _init_user_db(conn: sqlite3.Connection, username: str) -> None:
         conn.execute("INSERT INTO meta VALUES ('device_id', ?)", (uuid.uuid4().hex[:12],))
     if not conn.execute("SELECT 1 FROM meta WHERE key='device_name'").fetchone():
         conn.execute("INSERT INTO meta VALUES ('device_name', ?)", (DEVICE_NAME or username,))
+    _migrate_inventory_bins(conn)
+    conn.execute(
+        "INSERT OR IGNORE INTO bins (id,name,deleted,updated_at,device_id) VALUES ('default','Generale',0,0,?)",
+        (device_id(conn),),
+    )
+
+
+_INV_VIEWS = """
+CREATE VIEW inventory_total AS
+    SELECT part_num, color_id, SUM(quantity) AS quantity, MAX(updated_at) AS updated_at
+    FROM inventory GROUP BY part_num, color_id HAVING SUM(quantity) > 0;
+CREATE VIEW inventory_by_bin AS
+    SELECT part_num, color_id, bin, SUM(quantity) AS quantity, MAX(updated_at) AS updated_at
+    FROM inventory GROUP BY part_num, color_id, bin HAVING SUM(quantity) > 0;
+"""
+
+
+def _migrate_inventory_bins(conn: sqlite3.Connection) -> None:
+    """Add the bin column to inventories created before bins existed.
+
+    Views are dropped first: SQLite validates them on ALTER ... RENAME and would
+    fail while `inventory` is missing. Also recovers the half-migrated state
+    (inventory_m present, inventory gone) left by earlier attempts.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(inventory)")}
+    if "bin" in cols:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='inventory_m'").fetchone():
+            conn.execute("INSERT OR IGNORE INTO inventory SELECT * FROM inventory_m")
+            conn.execute("DROP TABLE inventory_m")
+            log.info("db: recuperate righe da inventory_m residuo")
+        return
+    conn.execute("DROP VIEW IF EXISTS inventory_total")
+    conn.execute("DROP VIEW IF EXISTS inventory_by_bin")
+    if not cols and not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='inventory_m'"
+    ).fetchone():  # both missing: recreate empty
+        conn.execute(
+            """
+            CREATE TABLE inventory (
+                part_num TEXT NOT NULL,
+                color_id INTEGER NOT NULL,
+                device_id TEXT NOT NULL,
+                bin TEXT NOT NULL DEFAULT 'default',
+                quantity INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (part_num, color_id, device_id, bin)
+            )
+            """
+        )
+        conn.executescript(_INV_VIEWS)
+        return
+    if cols:  # old-schema table still present: copy rows assigning them the default bin
+        conn.execute("DROP TABLE IF EXISTS inventory_m")
+        conn.execute(
+            """
+            CREATE TABLE inventory_m (
+                part_num TEXT NOT NULL,
+                color_id INTEGER NOT NULL,
+                device_id TEXT NOT NULL,
+                bin TEXT NOT NULL DEFAULT 'default',
+                quantity INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (part_num, color_id, device_id, bin)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO inventory_m SELECT part_num,color_id,device_id,'default',quantity,updated_at FROM inventory"
+        )
+        conn.execute("DROP TABLE inventory")
+    conn.execute("ALTER TABLE inventory_m RENAME TO inventory")
+    conn.executescript(_INV_VIEWS)
+    log.info("db: inventario migrato con supporto librerie")
 
 
 @contextmanager
@@ -164,21 +250,54 @@ def set_rebrickable_key(conn: sqlite3.Connection, key: str) -> None:
     )
 
 
-def set_quantity(conn: sqlite3.Connection, part_num: str, color_id: int, total: int) -> None:
-    """Sets the total quantity of a piece by adjusting this device's contribution."""
+def set_quantity(conn: sqlite3.Connection, part_num: str, color_id: int, total: int, bin_id: str = "default") -> None:
+    """Sets the bin total of a piece by adjusting this device's contribution."""
     dev = device_id(conn)
     others = conn.execute(
-        "SELECT COALESCE(SUM(quantity),0) FROM inventory WHERE part_num=? AND color_id=? AND device_id<>?",
-        (part_num, color_id, dev),
+        "SELECT COALESCE(SUM(quantity),0) FROM inventory "
+        "WHERE part_num=? AND color_id=? AND bin=? AND device_id<>?",
+        (part_num, color_id, bin_id, dev),
     ).fetchone()[0]
     conn.execute(
-        "INSERT INTO inventory (part_num,color_id,device_id,quantity,updated_at) VALUES (?,?,?,?,?) "
-        "ON CONFLICT(part_num,color_id,device_id) DO UPDATE SET quantity=excluded.quantity, updated_at=excluded.updated_at",
-        (part_num, color_id, dev, max(total, 0) - others, now_ms()),
+        "INSERT INTO inventory (part_num,color_id,device_id,bin,quantity,updated_at) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(part_num,color_id,device_id,bin) DO UPDATE SET quantity=excluded.quantity, updated_at=excluded.updated_at",
+        (part_num, color_id, dev, bin_id, max(total, 0) - others, now_ms()),
     )
 
 
-def get_quantity(conn: sqlite3.Connection, part_num: str, color_id: int) -> int:
+def get_quantity(conn: sqlite3.Connection, part_num: str, color_id: int, bin_id: str | None = None) -> int:
+    if bin_id is None:
+        return conn.execute(
+            "SELECT COALESCE(SUM(quantity),0) FROM inventory WHERE part_num=? AND color_id=?", (part_num, color_id)
+        ).fetchone()[0]
     return conn.execute(
-        "SELECT COALESCE(SUM(quantity),0) FROM inventory WHERE part_num=? AND color_id=?", (part_num, color_id)
+        "SELECT COALESCE(SUM(quantity),0) FROM inventory WHERE part_num=? AND color_id=? AND bin=?",
+        (part_num, color_id, bin_id),
     ).fetchone()[0]
+
+
+def move_quantity(conn: sqlite3.Connection, part_num: str, color_id: int, from_bin: str, to_bin: str, qty: int) -> None:
+    """Moves pieces between bins by writing this device's offset rows."""
+    dev, now = device_id(conn), now_ms()
+    for bin_id, delta in ((from_bin, -qty), (to_bin, qty)):
+        conn.execute(
+            "INSERT INTO inventory (part_num,color_id,device_id,bin,quantity,updated_at) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(part_num,color_id,device_id,bin) DO UPDATE SET "
+            "quantity=quantity+excluded.quantity, updated_at=excluded.updated_at",
+            (part_num, color_id, dev, bin_id, delta, now),
+        )
+
+
+def empty_bin(conn: sqlite3.Connection, bin_id: str, to_bin: str = "default") -> None:
+    """Moves the whole bin content to another bin (offsets cover other devices' rows)."""
+    rows = conn.execute(
+        "SELECT part_num, color_id, SUM(quantity) q FROM inventory WHERE bin=? "
+        "GROUP BY part_num, color_id HAVING q <> 0",
+        (bin_id,),
+    ).fetchall()
+    for part_num, color_id, qty in rows:
+        move_quantity(conn, part_num, color_id, bin_id, to_bin, qty)
+
+
+def valid_bin(conn: sqlite3.Connection, bin_id: str) -> bool:
+    return bool(conn.execute("SELECT 1 FROM bins WHERE id=? AND deleted=0", (bin_id,)).fetchone())

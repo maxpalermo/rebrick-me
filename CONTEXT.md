@@ -27,7 +27,10 @@ backend/app/
                get_db(username) inizializza lazy; migrate_legacy() sposta il vecchio
                data/lego.sqlite in users/<ADMIN_USER>/ al primo avvio;
                meta kv per-utente: device_id, device_name, rebrickable_api_key
-               (rebrickable_key(conn) -> chiave utente o fallback env)
+               (rebrickable_key(conn) -> chiave utente o fallback env);
+               bins = librerie (luoghi/progetti); inventory PK (part,color,device,bin),
+               _migrate_inventory_bins() ricostruisce la tabella (views da droppare
+               PRIMA del RENAME o fallisce) e recupera inventory_m residui
   catalog.py   dump CSV Rebrickable -> catalog.sqlite (set_parts, elements element_id LEGO,
                part_images...). Import via thread; tmp file per-process (fix race)
   scan.py      OpenCV segmenta pezzi -> Brickognize /predict/parts; scan_build_image()
@@ -63,6 +66,11 @@ frontend/src/
   ?query=element_id, link BrickLink ?P=part&C=bl_id, "copia element ID", CSV -> Rebrickable Buy Parts.
 - **Sync**: sessione cookie per browser; X-Sync-Token (per-utente, in Impostazioni) per
   sync server-server. peers(url,token,last_sync).
+- **Librerie (bins)**: ogni pezzo ha una libreria (bin, default 'Generale'): luoghi o
+  progetti. CRUD via /api/bins; eliminare un bin sposta i pezzi in Generale (offset
+  negativi -> copre anche righe di altri device). Move = POST /api/inventory/move.
+  Bin tombstoned tengono il nome cosi' i pezzi sincronizzati restano etichettati.
+  Il dettaglio set espone parts[].elsewhere = dove si trova un pezzo mancante.
 - **Zero-quantity**: conferma prima di eliminare il pezzo (confirm() in InventoryView).
 - **Auth edge**: /api/me 401 -> frontend mostra LoginView; fetch 401 dispatcha 'bs-unauthorized'.
 

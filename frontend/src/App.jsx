@@ -102,6 +102,30 @@ function PartSearch({ onPick, placeholder = 'Cerca pezzo per nome o codice (es. 
   )
 }
 
+/* ---------------- Bins (librerie) ---------------- */
+const useBins = () => {
+  const [bins, setBins] = useState([])
+  const reload = useCallback(() => api.get('/api/bins').then(setBins).catch(() => []), [])
+  useEffect(() => {
+    reload()
+  }, [reload])
+  return [bins, reload]
+}
+
+function BinSelect({ bins, value, onChange, exclude }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} title="Libreria">
+      {bins
+        .filter((b) => b.id !== exclude)
+        .map((b) => (
+          <option key={b.id} value={b.id}>
+            📚 {b.name}
+          </option>
+        ))}
+    </select>
+  )
+}
+
 /* ---------------- Scan ---------------- */
 function ScanView({ colors, notify, catalogReady }) {
   const [photo, setPhoto] = useState(null)
@@ -109,6 +133,8 @@ function ScanView({ colors, notify, catalogReady }) {
   const [rows, setRows] = useState([])
   const [busy, setBusy] = useState(false)
   const [segment, setSegment] = useState(true)
+  const [bins] = useBins()
+  const [saveBin, setSaveBin] = useState('default')
   const camRef = useRef()
   const fileRef = useRef()
 
@@ -158,7 +184,7 @@ function ScanView({ colors, notify, catalogReady }) {
   const save = async () => {
     const items = rows
       .filter((r) => r.include && r.part && r.color_id != null)
-      .map((r) => ({ part_num: r.part.part_num, color_id: r.color_id, quantity: r.quantity }))
+      .map((r) => ({ part_num: r.part.part_num, color_id: r.color_id, quantity: r.quantity, bin: saveBin }))
     if (!items.length) return notify('Seleziona almeno un pezzo con colore', true)
     try {
       await api.post('/api/inventory/add', items)
@@ -268,6 +294,10 @@ function ScanView({ colors, notify, catalogReady }) {
               </div>
             ))}
           </div>
+          <div className="row gap">
+            <span className="small muted">Aggiungi a:</span>
+            <BinSelect bins={bins} value={saveBin} onChange={setSaveBin} />
+          </div>
           <button className="primary big sticky" onClick={save}>
             ✅ Aggiungi {rows.filter((r) => r.include).length} pezzi all'inventario
           </button>
@@ -282,31 +312,109 @@ function InventoryView({ colors, notify }) {
   const [items, setItems] = useState(null)
   const [filter, setFilter] = useState('')
   const [adding, setAdding] = useState({ part: null, color_id: null, quantity: 1 })
+  const [bins, reloadBins] = useBins()
+  const [binFilter, setBinFilter] = useState('')
+  const [newBin, setNewBin] = useState('')
+  const [moving, setMoving] = useState(null) // {part_num,color_id,from,to,qty}
 
   const load = useCallback(() => api.get('/api/inventory').then(setItems).catch((e) => notify(e.message, true)), [notify])
   useEffect(() => {
     load()
   }, [load])
 
-  const setQty = async (it, q) => {
-    if (q <= 0 && !confirm(`Eliminare "${it.part_name || it.part_num}" (${it.color_name}) dall'inventario?`)) return
-    await api.put(`/api/inventory/${encodeURIComponent(it.part_num)}/${it.color_id}`, { quantity: Math.max(0, q) })
+  const refresh = () => {
     load()
+    reloadBins()
+  }
+
+  const qtyOf = (it, bin) => it.bins?.find((b) => b.bin === bin)?.qty ?? 0
+  const stepBin = (it) => {
+    if (binFilter) return binFilter
+    const held = [...(it.bins || [])].sort((a, b) => b.qty - a.qty)
+    return held[0]?.bin || 'default'
+  }
+
+  const setQty = async (it, q) => {
+    const bin = stepBin(it)
+    const next = binFilter ? q : qtyOf(it, bin) + (q - it.quantity)
+    if (next <= 0 && !confirm(`Eliminare "${it.part_name || it.part_num}" (${it.color_name}) dall'inventario?`)) return
+    await api.put(`/api/inventory/${encodeURIComponent(it.part_num)}/${it.color_id}`, {
+      quantity: Math.max(0, next),
+      bin,
+    })
+    load()
+    reloadBins()
   }
 
   const add = async () => {
     if (!adding.part || adding.color_id == null) return notify('Scegli pezzo e colore', true)
-    await api.post('/api/inventory/add', [{ part_num: adding.part.part_num, color_id: adding.color_id, quantity: adding.quantity }])
-    setAdding({ part: null, color_id: null, quantity: 1 })
+    const bin = adding.bin || binFilter || 'default'
+    await api.post('/api/inventory/add', [
+      { part_num: adding.part.part_num, color_id: adding.color_id, quantity: adding.quantity, bin },
+    ])
+    setAdding({ part: null, color_id: null, quantity: 1, bin })
     notify('Pezzo aggiunto')
+    refresh()
+  }
+
+  const addBin = async () => {
+    try {
+      await api.post('/api/bins', { name: newBin.trim() })
+      setNewBin('')
+      reloadBins()
+      notify('Libreria creata')
+    } catch (e) {
+      notify(e.message, true)
+    }
+  }
+
+  const renameBin = async (b) => {
+    const n = prompt('Nuovo nome della libreria', b.name)
+    if (!n?.trim() || n.trim() === b.name) return
+    await api.put(`/api/bins/${b.id}`, { name: n.trim() })
+    reloadBins()
     load()
+  }
+
+  const deleteBin = async (b) => {
+    if (!confirm(`Eliminare la libreria "${b.name}"? I suoi ${b.pieces} pezzi passano in "Generale".`)) return
+    await api.del(`/api/bins/${b.id}`)
+    if (binFilter === b.id) setBinFilter('')
+    refresh()
+  }
+
+  const startMove = (it) => {
+    const held = [...(it.bins || [])].sort((a, b) => b.qty - a.qty)
+    const from = held[0]?.bin || 'default'
+    setMoving({ key: `${it.part_num}|${it.color_id}`, part_num: it.part_num, color_id: it.color_id, from, to: 'default', qty: held[0]?.qty || 1 })
+  }
+
+  const doMove = async (it) => {
+    try {
+      const r = await api.post('/api/inventory/move', {
+        part_num: moving.part_num,
+        color_id: moving.color_id,
+        from: moving.from,
+        to: moving.to,
+        quantity: moving.qty,
+      })
+      notify(`${r.moved} pezzi spostati`)
+      setMoving(null)
+      refresh()
+    } catch (e) {
+      notify(e.message, true)
+    }
   }
 
   const shown = useMemo(() => {
     if (!items) return []
     const f = filter.toLowerCase()
-    return items.filter((i) => !f || `${i.part_num} ${i.part_name} ${i.color_name}`.toLowerCase().includes(f))
-  }, [items, filter])
+    return items.filter(
+      (i) =>
+        (!binFilter || i.bins?.some((b) => b.bin === binFilter)) &&
+        (!f || `${i.part_num} ${i.part_name} ${i.color_name}`.toLowerCase().includes(f))
+    )
+  }, [items, filter, binFilter])
 
   const total = items ? items.reduce((a, b) => a + b.quantity, 0) : 0
 
@@ -321,6 +429,54 @@ function InventoryView({ colors, notify }) {
       <p className="muted">
         {items ? `${total} pezzi, ${items.length} tipi diversi` : 'Caricamento…'}
       </p>
+      {bins.length > 1 && (
+        <div className="chips">
+          <button className={'chip' + (!binFilter ? ' sel' : '')} onClick={() => setBinFilter('')}>
+            Tutte
+          </button>
+          {bins.map((b) => (
+            <button
+              key={b.id}
+              className={'chip' + (binFilter === b.id ? ' sel' : '')}
+              onClick={() => setBinFilter(binFilter === b.id ? '' : b.id)}
+            >
+              {b.name} · {b.pieces}
+            </button>
+          ))}
+        </div>
+      )}
+      <details className="card">
+        <summary>📚 Librerie</summary>
+        <p className="muted small">
+          Organizza i pezzi per luogo o progetto (es. "Casa mia", "Casa genitori"). I pezzi restano interscambiabili:
+          nei set ti viene suggerito se un pezzo mancante si trova in un'altra libreria.
+        </p>
+        <div className="list">
+          {bins.map((b) => (
+            <div key={b.id} className="row between wrap">
+              <span>
+                <b>{b.name}</b> <span className="muted small">({b.pieces} pezzi, {b.kinds} tipi)</span>
+              </span>
+              <span className="row gap">
+                <button className="small" onClick={() => renameBin(b)} title="Rinomina">
+                  ✏️
+                </button>
+                {b.id !== 'default' && (
+                  <button className="small" onClick={() => deleteBin(b)} title="Elimina (i pezzi passano in Generale)">
+                    🗑️
+                  </button>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="row gap mt">
+          <input placeholder="Nuova libreria (es. Casa genitori)" value={newBin} onChange={(e) => setNewBin(e.target.value)} />
+          <button className="primary" disabled={!newBin.trim()} onClick={addBin}>
+            Crea
+          </button>
+        </div>
+      </details>
       <details className="card">
         <summary>➕ Aggiungi pezzo manualmente</summary>
         <PartSearch onPick={(p) => setAdding((a) => ({ ...a, part: p }))} />
@@ -331,6 +487,11 @@ function InventoryView({ colors, notify }) {
               <b>{adding.part.part_num}</b> {adding.part.name}
             </div>
             <ColorSelect colors={colors} value={adding.color_id} onChange={(v) => setAdding((a) => ({ ...a, color_id: v }))} />
+            <BinSelect
+              bins={bins}
+              value={adding.bin || binFilter || 'default'}
+              onChange={(v) => setAdding((a) => ({ ...a, bin: v }))}
+            />
             <input
               type="number"
               min="1"
@@ -346,23 +507,54 @@ function InventoryView({ colors, notify }) {
       </details>
       <input className="mt" placeholder="Filtra…" value={filter} onChange={(e) => setFilter(e.target.value)} />
       <div className="list mt">
-        {shown.map((it) => (
-          <div key={`${it.part_num}-${it.color_id}`} className="card inv">
-            <Img src={it.img_url} className="thumb" />
-            <div className="grow">
-              <div className="title">{it.part_name || it.part_num}</div>
-              <div className="muted small">
-                {it.part_num} · <Swatch rgb={it.rgb} trans={it.is_trans} /> {it.color_name}
+        {shown.map((it) => {
+          const key = `${it.part_num}|${it.color_id}`
+          const shownQty = binFilter ? qtyOf(it, binFilter) : it.quantity
+          return (
+            <div key={key} className="card inv" style={{ flexWrap: 'wrap' }}>
+              <Img src={it.img_url} className="thumb" />
+              <div className="grow">
+                <div className="title">{it.part_name || it.part_num}</div>
+                <div className="muted small">
+                  {it.part_num} · <Swatch rgb={it.rgb} trans={it.is_trans} /> {it.color_name}
+                </div>
+                {it.bins?.length > 0 && (
+                  <div className="muted small">📚 {it.bins.map((b) => `${b.name} ×${b.qty}`).join(' · ')}</div>
+                )}
               </div>
+              {bins.length > 1 && (
+                <button className="small" title="Sposta tra librerie" onClick={() => (moving?.key === key ? setMoving(null) : startMove(it))}>
+                  ⇄
+                </button>
+              )}
+              <div className="stepper">
+                <button onClick={() => setQty(it, shownQty - 1)}>−</button>
+                <span>{shownQty}</span>
+                <button onClick={() => setQty(it, shownQty + 1)}>+</button>
+              </div>
+              {moving?.key === key && (
+                <div className="row gap wrap" style={{ width: '100%' }}>
+                  <BinSelect bins={bins} value={moving.from} onChange={(v) => setMoving((m) => ({ ...m, from: v }))} />
+                  →
+                  <BinSelect bins={bins} value={moving.to} exclude={moving.from} onChange={(v) => setMoving((m) => ({ ...m, to: v }))} />
+                  <input
+                    type="number"
+                    className="qty"
+                    min="1"
+                    max={qtyOf(it, moving.from)}
+                    value={moving.qty}
+                    onChange={(e) => setMoving((m) => ({ ...m, qty: Math.max(1, Number(e.target.value) || 1) }))}
+                  />
+                  <button className="small primary" onClick={() => doMove(it)}>
+                    Sposta
+                  </button>
+                </div>
+              )}
             </div>
-            <div className="stepper">
-              <button onClick={() => setQty(it, it.quantity - 1)}>−</button>
-              <span>{it.quantity}</span>
-              <button onClick={() => setQty(it, it.quantity + 1)}>+</button>
-            </div>
-          </div>
-        ))}
+          )
+        })}
         {items && items.length === 0 && <p className="muted">Nessun pezzo ancora. Inizia dalla scansione!</p>}
+        {items && items.length > 0 && shown.length === 0 && <p className="muted">Nessun pezzo in questa libreria/filtro.</p>}
       </div>
     </div>
   )
@@ -627,6 +819,11 @@ function SetDetail({ setNum, notify }) {
                 <div className="muted small">
                   {p.part_num} · <Swatch rgb={p.rgb} /> {p.color_name}
                 </div>
+                {p.missing > 0 && p.elsewhere?.length > 0 && (
+                  <div className="small" style={{ color: 'var(--good)' }}>
+                    📍 Ce l'hai in: {p.elsewhere.map((e) => `${e.name} ×${e.qty}`).join(', ')}
+                  </div>
+                )}
               </div>
               {p.missing > 0 && (
                 <span className="row gap">

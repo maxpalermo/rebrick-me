@@ -1,5 +1,7 @@
+import json
 import logging
 import sqlite3
+import uuid
 
 import httpx
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -11,8 +13,8 @@ from .config import (
     ADMIN_USER, AUTO_IMPORT_CATALOG, CATALOG_DB, REBRICKABLE_API_KEY, SESSION_COOKIE, STATIC_DIR,
 )
 from .db import (
-    catalog_ready, device_id, device_name, get_db, get_quantity, manuals_dir, migrate_legacy, now_ms,
-    rebrickable_key, set_quantity, set_rebrickable_key, user_dir,
+    catalog_ready, device_id, device_name, empty_bin, get_db, get_quantity, manuals_dir, migrate_legacy,
+    move_quantity, now_ms, rebrickable_key, set_quantity, set_rebrickable_key, user_dir, valid_bin,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -215,11 +217,69 @@ async def scan_build(image: UploadFile = File(...), user: dict = Depends(current
             raise HTTPException(400, str(exc)) from exc
 
 
+# ---------- bins (librerie) ----------
+@app.get("/api/bins")
+def bins_list(user: dict = Depends(current_user)):
+    with get_db(user["username"]) as conn:
+        rows = conn.execute(
+            "SELECT b.id, b.name, COALESCE(t.pieces,0) pieces, COALESCE(t.kinds,0) kinds FROM bins b "
+            "LEFT JOIN (SELECT bin, SUM(quantity) pieces, COUNT(*) kinds FROM inventory_by_bin GROUP BY bin) t "
+            "ON t.bin=b.id WHERE b.deleted=0 ORDER BY b.id='default' DESC, b.name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+@app.post("/api/bins")
+def bin_create(data: dict = Body(...), user: dict = Depends(current_user)):
+    name = (data.get("name") or "").strip()[:40]
+    if not name:
+        raise HTTPException(400, "Nome mancante")
+    bin_id = uuid.uuid4().hex[:10]
+    with get_db(user["username"]) as conn:
+        conn.execute("INSERT INTO bins VALUES (?,?,0,?,?)", (bin_id, name, now_ms(), device_id(conn)))
+    return {"id": bin_id, "name": name}
+
+
+@app.put("/api/bins/{bin_id}")
+def bin_rename(bin_id: str, data: dict = Body(...), user: dict = Depends(current_user)):
+    name = (data.get("name") or "").strip()[:40]
+    if not name:
+        raise HTTPException(400, "Nome mancante")
+    with get_db(user["username"]) as conn:
+        cur = conn.execute(
+            "UPDATE bins SET name=?, updated_at=?, device_id=? WHERE id=? AND deleted=0",
+            (name, now_ms(), device_id(conn), bin_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Libreria non trovata")
+    return {"ok": True}
+
+
+@app.delete("/api/bins/{bin_id}")
+def bin_delete(bin_id: str, to: str = "default", user: dict = Depends(current_user)):
+    """Deletes a bin; its pieces are moved to `to` (default: the built-in bin)."""
+    if bin_id == "default":
+        raise HTTPException(400, "La libreria predefinita non si può eliminare")
+    with get_db(user["username"]) as conn:
+        if not valid_bin(conn, bin_id):
+            raise HTTPException(404, "Libreria non trovata")
+        if not valid_bin(conn, to):
+            raise HTTPException(400, "Libreria di destinazione non valida")
+        empty_bin(conn, bin_id, to)
+        conn.execute(
+            "UPDATE bins SET deleted=1, updated_at=?, device_id=? WHERE id=?",
+            (now_ms(), device_id(conn), bin_id),
+        )
+    return {"ok": True}
+
+
 # ---------- inventory ----------
 INV_SELECT = """
 SELECT t.part_num, t.color_id, t.quantity, t.updated_at,
        p.name AS part_name, c.name AS color_name, c.rgb, c.is_trans,
-       COALESCE(pi.img_url, (SELECT img_url FROM cat.part_images x WHERE x.part_num=t.part_num LIMIT 1)) AS img_url
+       COALESCE(pi.img_url, (SELECT img_url FROM cat.part_images x WHERE x.part_num=t.part_num LIMIT 1)) AS img_url,
+       (SELECT json_group_array(json_object('bin', bb.bin, 'qty', bb.quantity)) FROM inventory_by_bin bb
+        WHERE bb.part_num=t.part_num AND bb.color_id=t.color_id) AS bins
 FROM inventory_total t
 LEFT JOIN cat.parts p ON p.part_num = t.part_num
 LEFT JOIN cat.colors c ON c.id = t.color_id
@@ -231,27 +291,57 @@ LEFT JOIN cat.part_images pi ON pi.part_num = t.part_num AND pi.color_id = t.col
 def inventory_list(user: dict = Depends(current_user)):
     with get_db(user["username"]) as conn:
         require_catalog(conn)
-        return [dict(r) for r in conn.execute(INV_SELECT + " ORDER BY p.name, c.name")]
+        bin_names = {r[0]: r[1] for r in conn.execute("SELECT id,name FROM bins WHERE deleted=0")}
+        out = []
+        for r in conn.execute(INV_SELECT + " ORDER BY p.name, c.name"):
+            d = dict(r)
+            d["bins"] = [{"bin": b["bin"], "name": bin_names.get(b["bin"], b["bin"]), "qty": b["qty"]}
+                         for b in json.loads(d["bins"] or "[]")]
+            out.append(d)
+        return out
 
 
 @app.post("/api/inventory/add")
 def inventory_add(items: list[dict] = Body(...), user: dict = Depends(current_user)):
-    """items: [{part_num, color_id, quantity}] -> quantities are added to the current totals."""
+    """items: [{part_num, color_id, quantity, bin?}] -> quantities are added to the bin totals."""
     with get_db(user["username"]) as conn:
         require_catalog(conn)
         for it in items:
             part, color, qty = str(it["part_num"]), int(it["color_id"]), int(it.get("quantity", 1))
+            bin_id = str(it.get("bin") or "default")
             if not conn.execute("SELECT 1 FROM cat.parts WHERE part_num=?", (part,)).fetchone():
                 raise HTTPException(400, f"Pezzo sconosciuto: {part}")
-            set_quantity(conn, part, color, get_quantity(conn, part, color) + qty)
+            if not valid_bin(conn, bin_id):
+                raise HTTPException(400, "Libreria non valida")
+            set_quantity(conn, part, color, get_quantity(conn, part, color, bin_id) + qty, bin_id)
     return {"ok": True, "added": len(items)}
 
 
 @app.put("/api/inventory/{part_num}/{color_id}")
-def inventory_set(part_num: str, color_id: int, quantity: int = Body(..., embed=True), user: dict = Depends(current_user)):
+def inventory_set(part_num: str, color_id: int, data: dict = Body(...), user: dict = Depends(current_user)):
+    bin_id = str(data.get("bin") or "default")
     with get_db(user["username"]) as conn:
-        set_quantity(conn, part_num, color_id, quantity)
+        if not valid_bin(conn, bin_id):
+            raise HTTPException(400, "Libreria non valida")
+        set_quantity(conn, part_num, color_id, int(data.get("quantity", 0)), bin_id)
     return {"ok": True}
+
+
+@app.post("/api/inventory/move")
+def inventory_move(data: dict = Body(...), user: dict = Depends(current_user)):
+    """Moves pieces between bins: {part_num, color_id, from, to, quantity}."""
+    part, color = str(data.get("part_num", "")), int(data.get("color_id", 0))
+    from_bin, to_bin = str(data.get("from") or "default"), str(data.get("to") or "default")
+    if from_bin == to_bin:
+        raise HTTPException(400, "Libreria di origine e destinazione coincidono")
+    with get_db(user["username"]) as conn:
+        if not valid_bin(conn, from_bin) or not valid_bin(conn, to_bin):
+            raise HTTPException(400, "Libreria non valida")
+        qty = min(int(data.get("quantity") or 0), get_quantity(conn, part, color, from_bin))
+        if qty <= 0:
+            raise HTTPException(400, "Nessun pezzo da spostare in quella libreria")
+        move_quantity(conn, part, color, from_bin, to_bin, qty)
+    return {"ok": True, "moved": qty}
 
 
 @app.get("/api/inventory/export.csv", response_class=PlainTextResponse)
@@ -330,12 +420,25 @@ def _set_detail(conn, set_num: str, ignore_color: bool):
            WHERE sp.set_num=? ORDER BY p.name, c.name""",
         (set_num,),
     ).fetchall()
+    bin_names = {r[0]: r[1] for r in conn.execute("SELECT id,name FROM bins WHERE deleted=0")}
+    avail = conn.execute(
+        "SELECT part_num, color_id, bin, SUM(quantity) q FROM inventory "
+        "GROUP BY part_num, color_id, bin HAVING q > 0"
+    ).fetchall()
+    exact_map, any_map = {}, {}
+    for r in avail:
+        name = bin_names.get(r["bin"], r["bin"])
+        exact_map.setdefault((r["part_num"], r["color_id"]), {})[name] = r["q"]
+        m = any_map.setdefault(r["part_num"], {})
+        m[name] = m.get(name, 0) + r["q"]
     out, have_total = [], 0
     for r in parts:
         d = dict(r)
         have = d["have_any"] if ignore_color else d["have_exact"]
         d["have"] = min(have, d["need"])
         d["missing"] = d["need"] - d["have"]
+        where = any_map.get(d["part_num"], {}) if ignore_color else exact_map.get((d["part_num"], d["color_id"]), {})
+        d["elsewhere"] = [{"name": n, "qty": q} for n, q in sorted(where.items())]
         have_total += d["have"]
         out.append(d)
     s["parts"] = out

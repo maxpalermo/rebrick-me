@@ -19,7 +19,9 @@ def export_state(conn: sqlite3.Connection) -> dict:
         "device_name": device_name(conn),
         "exported_at": now_ms(),
         "inventory": [dict(r) for r in conn.execute(
-            "SELECT part_num,color_id,device_id,quantity,updated_at FROM inventory")],
+            "SELECT part_num,color_id,device_id,bin,quantity,updated_at FROM inventory")],
+        "bins": [dict(r) for r in conn.execute(
+            "SELECT id,name,deleted,updated_at,device_id FROM bins")],
         "saved_projects": [dict(r) for r in conn.execute(
             "SELECT set_num,note,deleted,updated_at,device_id FROM saved_projects")],
         "manuals": [dict(r) for r in conn.execute(f"SELECT {','.join(MANUAL_COLS)} FROM manuals")],
@@ -29,13 +31,23 @@ def export_state(conn: sqlite3.Connection) -> dict:
 def import_state(conn: sqlite3.Connection, manuals_dir: Path, data: dict) -> dict:
     if data.get("format") != "brick-scanner-sync/1":
         raise ValueError("Formato di sincronizzazione non riconosciuto")
-    stats = {"inventory": 0, "saved_projects": 0, "manuals": 0}
+    stats = {"inventory": 0, "bins": 0, "saved_projects": 0, "manuals": 0}
+    for r in data.get("bins", []):
+        cur = conn.execute(
+            "INSERT INTO bins (id,name,deleted,updated_at,device_id) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET name=excluded.name, deleted=excluded.deleted, "
+            "updated_at=excluded.updated_at, device_id=excluded.device_id "
+            "WHERE excluded.updated_at > bins.updated_at",
+            (r["id"], r["name"], int(r.get("deleted", 0)), int(r["updated_at"]), r["device_id"]),
+        )
+        stats["bins"] += cur.rowcount
     for r in data.get("inventory", []):
         cur = conn.execute(
-            "INSERT INTO inventory (part_num,color_id,device_id,quantity,updated_at) VALUES (?,?,?,?,?) "
-            "ON CONFLICT(part_num,color_id,device_id) DO UPDATE SET quantity=excluded.quantity, "
+            "INSERT INTO inventory (part_num,color_id,device_id,bin,quantity,updated_at) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(part_num,color_id,device_id,bin) DO UPDATE SET quantity=excluded.quantity, "
             "updated_at=excluded.updated_at WHERE excluded.updated_at > inventory.updated_at",
-            (r["part_num"], int(r["color_id"]), r["device_id"], int(r["quantity"]), int(r["updated_at"])),
+            (r["part_num"], int(r["color_id"]), r["device_id"], str(r.get("bin") or "default"),
+             int(r["quantity"]), int(r["updated_at"])),
         )
         stats["inventory"] += cur.rowcount
     for r in data.get("saved_projects", []):

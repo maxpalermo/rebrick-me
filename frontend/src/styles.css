@@ -84,6 +84,9 @@ details summary { cursor: pointer; font-weight: 600; margin-bottom: 0.5em; }
 .img-ph.set-img { width: 100%; height: 140px; }
 .swatch { display: inline-block; width: 0.9em; height: 0.9em; border-radius: 3px; border: 1px solid rgba(0,0,0,0.25); vertical-align: -0.1em; }
 .swatch.trans { opacity: 0.6; }
+.chips { display: flex; gap: 0.4em; flex-wrap: wrap; margin: 0.5em 0; }
+button.chip { font-size: 0.85rem; padding: 0.3em 0.7em; border-radius: 999px; }
+button.chip.sel { background: var(--red); border-color: var(--red); color: #fff; font-weight: 600; }
 .stepper { display: flex; align-items: center; gap: 0.3em; }
 .stepper button { width: 2.2em; height: 2.2em; justify-content: center; padding: 0; font-size: 1.1rem; }
 .stepper span { min-width: 2em; text-align: center; font-weight: 700; }
