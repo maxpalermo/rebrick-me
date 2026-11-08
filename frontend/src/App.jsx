@@ -5,6 +5,7 @@ const TABS = [
   ['scan', 'Scansiona', '📷'],
   ['inventory', 'Pezzi', '🧱'],
   ['projects', 'Progetti', '🏗️'],
+  ['identify', 'Identifica', '🔍'],
   ['manuals', 'Istruzioni', '📘'],
   ['settings', 'Impostazioni', '⚙️'],
 ]
@@ -145,6 +146,15 @@ function ScanView({ colors, notify, catalogReady }) {
 
   const update = (i, patch) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)))
 
+  const findSet = () => {
+    const picked = rows
+      .filter((r) => r.include && r.part)
+      .map((r) => ({ part_num: r.part.part_num, color_id: r.color_id, name: r.part.name, img_url: r.part.img_url }))
+    if (!picked.length) return notify('Seleziona almeno un pezzo riconosciuto', true)
+    localStorage.setItem('identifyParts', JSON.stringify(picked))
+    go('identify')
+  }
+
   const save = async () => {
     const items = rows
       .filter((r) => r.include && r.part && r.color_id != null)
@@ -206,7 +216,12 @@ function ScanView({ colors, notify, catalogReady }) {
 
       {rows.length > 0 && (
         <>
-          <h3>Pezzi riconosciuti ({rows.length})</h3>
+          <div className="row between wrap">
+            <h3>Pezzi riconosciuti ({rows.length})</h3>
+            <button className="small" onClick={findSet}>
+              🔍 Da quale set viene?
+            </button>
+          </div>
           <div className="list">
             {rows.map((r, i) => (
               <div key={i} className={'card piece' + (r.include ? '' : ' dim')}>
@@ -602,6 +617,122 @@ function SetDetail({ setNum, notify }) {
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+/* ---------------- Identify ---------------- */
+function IdentifyView({ colors, notify }) {
+  const [parts, setParts] = useState([])
+  const [ignoreColor, setIgnoreColor] = useState(false)
+  const [partial, setPartial] = useState(false)
+  const [res, setRes] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    try {
+      const pre = JSON.parse(localStorage.getItem('identifyParts') || 'null')
+      if (pre?.length) setParts(pre)
+      localStorage.removeItem('identifyParts')
+    } catch {}
+  }, [])
+
+  const addPart = (p) => {
+    if (parts.some((x) => x.part_num === p.part_num)) return
+    setParts([...parts, { part_num: p.part_num, name: p.name, img_url: p.img_url, color_id: null }])
+  }
+
+  const setPartColor = (partNum, color_id) => setParts((ps) => ps.map((x) => (x.part_num === partNum ? { ...x, color_id } : x)))
+  const removePart = (partNum) => setParts((ps) => ps.filter((x) => x.part_num !== partNum))
+
+  const sought = new Set(parts.map((p) => p.part_num)).size
+
+  const search = async () => {
+    if (!parts.length) return
+    if (!ignoreColor && parts.some((p) => !p.color_id)) {
+      return notify('Scegli il colore di ogni pezzo, oppure attiva "Ignora i colori"', true)
+    }
+    setBusy(true)
+    try {
+      const r = await api.post('/api/sets/identify', {
+        parts: parts.map((p) => ({ part_num: p.part_num, color_id: p.color_id || 0 })),
+        ignore_color: ignoreColor,
+        min_match: partial && sought > 1 ? sought - 1 : sought,
+      })
+      setRes(r)
+      if (!r.results.length) notify('Nessun set trovato: prova la corrispondenza parziale o ignora i colori', true)
+    } catch (e) {
+      notify(e.message, true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="view">
+      <h2>🔍 Da quale set viene questo pezzo?</h2>
+      <p className="muted">
+        Aggiungi i pezzi che hai trovato: l'app cerca i set che li contengono tutti. Con 2-3 pezzi distintivi la lista si
+        restringe molto.
+      </p>
+      <div className="card">
+        <PartSearch placeholder="Aggiungi un pezzo per nome o codice…" onPick={addPart} />
+        {parts.length > 0 && (
+          <div className="list mt">
+            {parts.map((p) => (
+              <div key={p.part_num} className="inv">
+                <Img src={p.img_url} className="thumb-s" />
+                <div className="grow">
+                  <div className="title">{p.name || p.part_num}</div>
+                  <div className="muted small">{p.part_num}</div>
+                </div>
+                {!ignoreColor && (
+                  <ColorSelect colors={colors} value={p.color_id} onChange={(v) => setPartColor(p.part_num, v)} />
+                )}
+                <button className="small" onClick={() => removePart(p.part_num)}>
+                  🗑
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="row gap wrap mt">
+          <label className="check">
+            <input type="checkbox" checked={ignoreColor} onChange={(e) => setIgnoreColor(e.target.checked)} /> Ignora i colori
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={partial} onChange={(e) => setPartial(e.target.checked)} disabled={sought < 2} />{' '}
+            Corrispondenza parziale
+          </label>
+          <button className="primary" disabled={busy || !parts.length} onClick={search}>
+            {busy ? 'Cerco…' : '🔍 Trova il set'}
+          </button>
+        </div>
+      </div>
+
+      {res && (
+        <>
+          <p className="muted">
+            {res.results.length === 0
+              ? 'Nessun set contiene questa combinazione di pezzi.'
+              : `${res.results.length}${res.results.length >= 60 ? '+' : ''} set candidati (${res.sought} pezzi cercati)`}
+          </p>
+          <div className="grid">
+            {res.results.map((s) => (
+              <button key={s.set_num} className="card set" onClick={() => go(`projects/${s.set_num}`)}>
+                <Img src={s.img_url} className="set-img" />
+                <div className="title">{s.name}</div>
+                <div className="muted small">
+                  {s.set_num} · {s.year} · {s.theme}
+                </div>
+                <span className={'badge match ' + (s.matched === res.sought ? 'full' : '')}>
+                  {s.matched}/{res.sought} pezzi
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -1108,6 +1239,7 @@ export default function App() {
   if (tab === 'inventory') view = <InventoryView colors={colors} notify={notify} />
   else if (tab === 'projects' && sub) view = <SetDetail setNum={decodeURIComponent(sub)} notify={notify} />
   else if (tab === 'projects') view = <ProjectsView notify={notify} />
+  else if (tab === 'identify') view = <IdentifyView colors={colors} notify={notify} />
   else if (tab === 'manuals') view = <ManualsView notify={notify} />
   else if (tab === 'settings') view = <SettingsView status={status} refresh={refresh} notify={notify} me={me} onLogout={logout} />
   else if (tab === 'admin' && me.is_admin) view = <AdminView notify={notify} />

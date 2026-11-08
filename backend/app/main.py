@@ -333,6 +333,47 @@ def set_missing_csv(set_num: str, ignore_color: bool = False, user: dict = Depen
                              headers={"Content-Disposition": f"attachment; filename=mancanti-{set_num}.csv"})
 
 
+@app.post("/api/sets/identify")
+def sets_identify(data: dict = Body(...), user: dict = Depends(current_user)):
+    """Reverse lookup: sets that contain the given pieces (part_num + color_id).
+    Returns sets matching at least `min_match` distinct sought pieces (default: all)."""
+    raw = data.get("parts") or []
+    if not raw:
+        raise HTTPException(400, "Indica almeno un pezzo")
+    ignore_color = bool(data.get("ignore_color"))
+    limit = min(int(data.get("limit") or 60), 200)
+    needle = sorted({(str(p["part_num"]), int(p.get("color_id") or 0)) for p in raw})[:20]
+    sought = len(needle)
+    min_match = int(data.get("min_match") or 0) or sought
+    with get_db(user["username"]) as conn:
+        require_catalog(conn)
+        if ignore_color:
+            values = ",".join("(?)" for _ in needle)
+            params = [p for p, _ in needle]
+            have = f"""WITH n(part_num) AS (VALUES {values})
+                SELECT sp.set_num, COUNT(DISTINCT sp.part_num) matched,
+                       GROUP_CONCAT(DISTINCT sp.part_num) matched_parts
+                FROM cat.set_parts sp JOIN n ON n.part_num=sp.part_num
+                GROUP BY sp.set_num HAVING matched >= ?"""
+        else:
+            values = ",".join("(?,?)" for _ in needle)
+            params = [x for pair in needle for x in pair]
+            have = f"""WITH n(part_num,color_id) AS (VALUES {values})
+                SELECT sp.set_num, COUNT(DISTINCT sp.part_num||'|'||sp.color_id) matched,
+                       GROUP_CONCAT(DISTINCT sp.part_num||':'||sp.color_id) matched_parts
+                FROM cat.set_parts sp JOIN n ON n.part_num=sp.part_num AND n.color_id=sp.color_id
+                GROUP BY sp.set_num HAVING matched >= ?"""
+        rows = conn.execute(
+            f"""SELECT s.set_num, s.name, s.year, s.img_url, s.total_qty, th.name theme,
+                       h.matched, h.matched_parts
+                FROM ({have}) h JOIN cat.sets s ON s.set_num=h.set_num
+                LEFT JOIN cat.themes th ON th.id=s.theme_id
+                ORDER BY h.matched DESC, s.year DESC, s.name LIMIT ?""",
+            (*params, min_match, limit),
+        ).fetchall()
+        return {"sought": sought, "results": [dict(r) for r in rows]}
+
+
 @app.get("/api/sets/{set_num}/alternates")
 async def set_alternates(set_num: str, user: dict = Depends(current_user)):
     """Alternative builds (MOCs) from Rebrickable. Requires REBRICKABLE_API_KEY."""
