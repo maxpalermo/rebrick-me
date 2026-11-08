@@ -89,7 +89,7 @@ def _fetch_bricklink_color_ids(client: httpx.Client) -> dict[int, int]:
 def import_catalog() -> None:
     if not _lock.acquire(blocking=False):
         return
-    tmp = CATALOG_DB.with_suffix(".tmp")
+    tmp = CATALOG_DB.with_name(f"catalog.{os.getpid()}.tmp")
     try:
         _set("running", "Download catalogo Rebrickable...", 0.0)
         raw = {}
