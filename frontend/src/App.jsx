@@ -289,6 +289,7 @@ function InventoryView({ colors, notify }) {
   }, [load])
 
   const setQty = async (it, q) => {
+    if (q <= 0 && !confirm(`Eliminare "${it.part_name || it.part_num}" (${it.color_name}) dall'inventario?`)) return
     await api.put(`/api/inventory/${encodeURIComponent(it.part_num)}/${it.color_id}`, { quantity: Math.max(0, q) })
     load()
   }
