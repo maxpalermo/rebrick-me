@@ -505,6 +505,15 @@ function SetDetail({ setNum, notify }) {
     load()
   }
 
+  const copyElementIds = () => {
+    const lines = missing.filter((p) => p.element_id).map((p) => `${p.element_id}\t${p.missing}`)
+    const skipped = missing.length - lines.length
+    navigator.clipboard
+      ?.writeText(lines.join('\n'))
+      .then(() => notify(`Copiati ${lines.length} element ID${skipped ? ` (${skipped} pezzi senza codice LEGO)` : ''}`))
+      .catch(() => notify('Copia non riuscita', true))
+  }
+
   if (!d) return <div className="view muted">Caricamento…</div>
   const missing = d.parts.filter((p) => p.missing > 0)
   const parts = onlyMissing ? missing : d.parts
@@ -594,12 +603,20 @@ function SetDetail({ setNum, notify }) {
             <label className="check">
               <input type="checkbox" checked={onlyMissing} onChange={(e) => setOnlyMissing(e.target.checked)} /> Solo mancanti
             </label>
+            <button className="small" onClick={copyElementIds} disabled={!missing.length}>
+              📋 Copia element ID
+            </button>
             <a className="button" href={`/api/sets/${setNum}/missing.csv?ignore_color=${ignoreColor}`}>
               ⬇️ CSV mancanti
             </a>
           </div>
         </div>
-        <p className="muted small">Il CSV si può importare su Rebrickable o BrickLink per ordinare i pezzi mancanti.</p>
+        {missing.length > 0 && (
+          <p className="muted small">
+            🛒 <b>LEGO Pick a Brick</b>: clicca 🧱 sul pezzo o incolla gli element ID su lego.com · <b>BrickLink</b>: clicca
+            🛒 (pagina del pezzo, scegli colore e venditore) o importa il CSV su Rebrickable → Buy Parts.
+          </p>
+        )}
         <div className="list">
           {parts.map((p) => (
             <div key={`${p.part_num}-${p.color_id}`} className={'inv' + (p.missing ? '' : ' ok')}>
@@ -610,6 +627,30 @@ function SetDetail({ setNum, notify }) {
                   {p.part_num} · <Swatch rgb={p.rgb} /> {p.color_name}
                 </div>
               </div>
+              {p.missing > 0 && (
+                <span className="row gap">
+                  {p.element_id && (
+                    <a
+                      className="button small"
+                      href={`https://www.lego.com/it-it/pick-and-build/pick-a-brick?query=${p.element_id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={`LEGO Pick a Brick · element ${p.element_id}`}
+                    >
+                      🧱
+                    </a>
+                  )}
+                  <a
+                    className="button small"
+                    href={`https://www.bricklink.com/v2/catalog/catalogitem.page?P=${p.part_num}${p.bl_id ? `&C=${p.bl_id}` : ''}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Cerca su BrickLink"
+                  >
+                    🛒
+                  </a>
+                </span>
+              )}
               <div className={'need ' + (p.missing ? 'miss' : 'have')}>
                 {p.have}/{p.need}
               </div>

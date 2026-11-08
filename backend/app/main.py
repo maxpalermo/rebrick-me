@@ -298,8 +298,12 @@ def _set_row(conn, set_num):
 
 def _set_detail(conn, set_num: str, ignore_color: bool):
     s = dict(_set_row(conn, set_num))
+    has_elements = conn.execute(
+        "SELECT 1 FROM cat.sqlite_master WHERE name='elements'").fetchone() is not None
+    el_col = (", (SELECT e.element_id FROM cat.elements e WHERE e.part_num=sp.part_num "
+              "AND e.color_id=sp.color_id) element_id") if has_elements else ", NULL element_id"
     parts = conn.execute(
-        """SELECT sp.part_num, sp.color_id, sp.quantity need, p.name part_name, c.name color_name, c.rgb,
+        """SELECT sp.part_num, sp.color_id, sp.quantity need, p.name part_name, c.name color_name, c.rgb, c.bl_id""" + el_col + """,
                   COALESCE(pi.img_url, (SELECT img_url FROM cat.part_images x WHERE x.part_num=sp.part_num LIMIT 1)) img_url,
                   COALESCE((SELECT quantity FROM inventory_total t WHERE t.part_num=sp.part_num AND t.color_id=sp.color_id),0) have_exact,
                   COALESCE((SELECT SUM(quantity) FROM inventory_total t WHERE t.part_num=sp.part_num),0) have_any

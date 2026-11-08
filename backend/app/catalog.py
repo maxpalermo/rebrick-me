@@ -14,7 +14,7 @@ from .config import CATALOG_DB, REBRICKABLE_API_KEY, REBRICKABLE_DOWNLOADS
 
 log = logging.getLogger("catalog")
 
-FILES = ["colors", "themes", "part_categories", "parts", "sets", "inventories", "inventory_parts"]
+FILES = ["colors", "themes", "part_categories", "parts", "sets", "inventories", "inventory_parts", "elements"]
 
 SCHEMA = """
 CREATE TABLE catalog_meta (key TEXT PRIMARY KEY, value TEXT);
@@ -30,6 +30,8 @@ CREATE TABLE set_parts (set_num TEXT, part_num TEXT, color_id INTEGER, quantity 
 CREATE TABLE part_images (part_num TEXT, color_id INTEGER, img_url TEXT,
                           PRIMARY KEY (part_num, color_id)) WITHOUT ROWID;
 CREATE TABLE part_alias (alias TEXT PRIMARY KEY, part_num TEXT);
+CREATE TABLE elements (part_num TEXT, color_id INTEGER, element_id TEXT,
+                       PRIMARY KEY (part_num, color_id)) WITHOUT ROWID;
 """
 
 status = {"state": "idle", "message": "", "progress": 0.0, "error": None}
@@ -147,6 +149,14 @@ def import_catalog() -> None:
             DROP TABLE ip;
             """
         )
+        _set(message="Importazione element ID LEGO", progress=0.92)
+        conn.execute("CREATE TEMP TABLE el (element_id TEXT, part_num TEXT, color_id INTEGER)")
+        conn.executemany(
+            "INSERT INTO el VALUES (?,?,?)",
+            ((r[0], r[1], _int(r[2])) for r in _rows(raw["elements"])),
+        )
+        conn.execute("INSERT INTO elements SELECT part_num, color_id, MAX(element_id) FROM el GROUP BY part_num, color_id")
+        conn.execute("DROP TABLE el")
         conn.execute("INSERT INTO catalog_meta VALUES ('imported_at', ?)", (str(int(time.time())),))
         conn.commit()
         conn.execute("VACUUM")
