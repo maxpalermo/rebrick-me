@@ -2,73 +2,102 @@
 
 > Leggi questo file prima di continuare. Riassume le decisioni prese e lo stato attuale.
 
-## Obiettivo (richiesta originale dell'utente)
-Web app con cui fotografare i propri pezzi LEGO. Un'IA riconosce i pezzi, l'app cerca online quali progetti (set) si possono costruire con i pezzi disponibili, mostra un elenco con i **pezzi mancanti** e permette di scaricare il **manuale di istruzioni**.
+## Obiettivo
+Web app PWA per fotografare pezzi LEGO: l'IA li riconosce, l'app tiene l'inventario, mostra
+quali set si possono costruire (con pezzi mancanti ordinabili), salva le istruzioni PDF offline,
+identifica da quale set provengono pezzi o costruzioni complete, sincronizza tra dispositivi.
 
-Requisiti aggiuntivi dell'utente:
-- tutto dentro un **container Docker** con tutti i servizi attivi;
-- database **SQLite**, perché l'app deve stare sul cellulare o sul PC. Registra i pezzi disponibili e conserva le istruzioni sempre disponibili;
-- **sincronizzazione** tra i propri dispositivi, per unire i dati;
-- cartella del progetto sul PC dell'utente: `/home/massimiliano/docker/rebrick-me`;
-- l'utente lavora con **Devin Desktop** sul proprio PC, non con Devin cloud.
-
-## Stato attuale: v0.2.0 — multi-utente con login
-Testato end-to-end in Docker:
-- scansione di una foto con 3 pezzi: segmentazione OpenCV, poi Brickognize. Codice e colore corretti per tutti e 3;
-- calcolo dei set costruibili su ~28.500 set in meno di 0,2 s;
-- download delle istruzioni da LEGO.com (set 10696: libretto principale + 4 extra) salvate in `data/manuals`;
-- sincronizzazione tra due istanze (inventari sommati senza duplicati, PDF copiati) e backup/ripristino `.zip`;
-- **multi-utente (v0.2.0)**: login con cookie di sessione, un `lego.sqlite` per utente in `data/users/<nome>/` (isolamento totale), `data/admin.db` per utenti/sessioni/token; area admin su `#/admin` (creazione/eliminazione utenti, reset password, statistiche); admin ha anche il proprio inventario; sync tra istanze via `X-Sync-Token` (Impostazioni → Token di sincronizzazione); migrazione automatica del vecchio `data/lego.sqlite` in `users/<ADMIN_USER>/` al primo avvio;
-- foto reali dal telefono testate in produzione: riconoscimento pezzi OK.
-
-Non ancora testato: installazione PWA via HTTPS, chiave Rebrickable reale (MOC alternativi), peer sync tra istanze con token.
+## Stato attuale: v0.3 in produzione
+App multi-utente deployata sul server di produzione (vedi sotto) e sul PC locale.
+Testato end-to-end: login, creazione utenti, isolamento inventari, scansione pezzi,
+identificazione set da foto (BrickHeadz Batman -> 41585-1), intersezione pezzi->set
+(3 pezzi distintivi -> set unico corretto), ordine pezzi mancanti, catalogo con element_id.
 
 ## Architettura
-Un solo container (`Dockerfile` multi-stage: build Node del frontend + runtime Python 3.12-slim). `docker-compose.yml` espone la porta `${PORT:-8080}` → 8000 e monta il volume `./data:/data`.
+Un solo container (`Dockerfile` multi-stage: build Node del frontend + runtime Python 3.12-slim).
+DB SQLite, niente ORM, query raw. FastAPI + React 18/Vite 5 (hash routing, PWA).
 
 ```
 backend/app/
-  config.py    variabili d'ambiente (DATA_DIR, REBRICKABLE_API_KEY, DEVICE_NAME, ADMIN_USER/PASSWORD, USERS_DIR...)
-  admin_db.py  admin.db: utenti (pbkdf2), sessioni cookie 30gg, sync_tokens per utente
-  db.py        lego.sqlite per-utente in users/<nome>/ + ATTACH "cat"; set_quantity() CRDT; migrate_legacy()
-  catalog.py   download dei dump CSV pubblici Rebrickable -> catalog.sqlite (tabelle set_parts, part_images...)
-  scan.py      OpenCV (sfondo stimato dai bordi, distanza Lab, Otsu, contorni) -> crop -> Brickognize /predict/parts/
-  manuals.py   scraping dei link PDF dalla pagina lego.com/it-it/service/building-instructions/<num>; upload/URL
-  sync.py      export/import JSON, merge, peer sync bidirezionale, backup zip
-  main.py      API FastAPI + serve la SPA (static/)
-frontend/src/  React 18 + Vite 5, PWA (manifest + sw.js), UI in italiano, navigazione via hash
-  App.jsx      viste: Scansiona, Pezzi (inventario), Progetti (+ dettaglio set), Istruzioni, Impostazioni
+  config.py    env: DATA_DIR, ADMIN_USER, ADMIN_PASSWORD, DEVICE_NAME, REBRICKABLE_API_KEY,
+               AUTO_IMPORT_CATALOG, USERS_DIR=data/users, ADMIN_DB=data/admin.db
+  admin_db.py  admin.db: users (pbkdf2), sessions (cookie bs_session 30gg), sync_tokens,
+               settings (chiave Rebrickable salvata da UI via get_rebrickable_key())
+  db.py        lego.sqlite PER-UTENTE in users/<nome>/ + ATTACH "cat" (catalogo condiviso);
+               get_db(username) inizializza lazy; migrate_legacy() sposta il vecchio
+               data/lego.sqlite in users/<ADMIN_USER>/ al primo avvio
+  catalog.py   dump CSV Rebrickable -> catalog.sqlite (set_parts, elements element_id LEGO,
+               part_images...). Import via thread; tmp file per-process (fix race)
+  scan.py      OpenCV segmenta pezzi -> Brickognize /predict/parts; scan_build_image()
+               per costruzioni complete -> /predict/sets + /predict/figs in parallelo
+  manuals.py   scraping PDF istruzioni da lego.com + upload/URL
+  sync.py      export/import JSON merge CRDT, peer sync con header X-Sync-Token, backup zip
+  main.py      tutte le API; auth via Depends(current_user) (cookie o X-Sync-Token),
+               require_admin per /api/admin/*
+frontend/src/
+  App.jsx      viste: scan, inventory, projects(+set detail), identify, manuals,
+               settings, admin (solo is_admin). LoginView LEGO animata (mattoncini cadono)
 ```
 
 ### Dati (`./data`)
-- `admin.db`: `users` (username, password_hash pbkdf2, is_admin), `sessions`, `sync_tokens`
-- `users/<nome>/lego.sqlite`: `meta` (device_id, device_name), `inventory`, `inventory_total`, `manuals`, `saved_projects`, `peers`
-- `users/<nome>/manuals/<sha256>.pdf`: file indirizzati per contenuto (deduplicati, sincronizzati per hash)
-- `catalog.sqlite`: condiviso tra utenti, si rigenera dai CSV Rebrickable
-- Produzione: `docker-compose.prod.yml` (porta host 8020, NPM → HTTPS + dominio; la porta 8020 non va esposta pubblicamente)
+- `admin.db`: users, sessions, sync_tokens, settings — sito-wide
+- `users/<nome>/lego.sqlite`: inventario CRDT (riga per part+color+device), manuals, saved_projects, peers
+- `users/<nome>/manuals/<sha256>.pdf`
+- `catalog.sqlite`: condiviso (set_parts, elements, colors con bl_id solo se chiave Rebrickable)
 
 ### Decisioni chiave
-- **Riconoscimento**: API Brickognize (gratuita, senza chiave). Restituisce ID **BrickLink** di pezzi e colori, mappati a Rebrickable così:
-  - pezzo: stesso part_num nel catalogo, altrimenti `part_alias` o Rebrickable API `?bricklink_id=` (solo con chiave);
-  - colore: `colors.bl_id` (popolato solo con la chiave), altrimenti corrispondenza per nome.
-- **Catalogo locale** dai dump CSV pubblici (`cdn.rebrickable.com/media/downloads/*.csv.gz`), senza chiave: i set costruibili si calcolano offline in SQL. Si usa l'ultima versione dell'inventario di ogni set e si escludono i pezzi di ricambio (spare).
-- **Matching**: per ogni set somma `MIN(posseduti, richiesti)`; percentuale = have / total_qty; opzione "ignora colori"; filtro min/max numero di pezzi (default min 10, per escludere i set minuscoli).
-- **Inventario CRDT**: riga per `(part_num, color_id, device_id)`. Il totale è la somma dei contributi; ogni dispositivo modifica solo le proprie righe. Il merge è "vince l'`updated_at` più recente" per riga, quindi è senza conflitti e risincronizzare non duplica nulla.
-- **manuals / saved_projects**: last-write-wins con soft delete (`deleted=1`).
-- **Peer sync** (`POST /api/sync/peer {url}`): pull export → merge → scarica i PDF mancanti → push export → carica i PDF che mancano al peer (`PUT /api/sync/files/<sha>`).
-- **Istruzioni LEGO**: non esiste un'API ufficiale; si leggono i link `product.bi.core.pdf/...` e `product.bi.additional.extra.pdf/...` dalla pagina. Possono rompersi se LEGO cambia il sito. Ripiego: upload del PDF o URL.
-- **Cellulare**: Docker gira su PC/NAS. Il telefono usa il browser (`<input capture="environment">` funziona anche su HTTP). L'installazione come PWA richiede HTTPS (Tailscale serve / reverse proxy).
-- Chiave **Rebrickable** opzionale (`.env` → `REBRICKABLE_API_KEY`): MOC alternativi (`/api/sets/{set}/alternates`) e mappatura BrickLink più precisa.
+- **Multi-utente**: un DB per utente (isolamento fisico, query invariate). Admin crea utenti
+  da #/admin; admin è anche utente col suo inventario. Nessuna registrazione pubblica.
+- **Chiave Rebrickable**: salvata in admin.db.settings da Impostazioni (admin), letta runtime
+  da get_rebrickable_key(); env REBRICKABLE_API_KEY = fallback. Abilita MOC, bl_id colore,
+  mappatura BrickLink precisa.
+- **Identifica**: (a) foto costruzione -> predict/sets+figs -> candidati con score, click->dettaglio;
+  (b) ricerca inversa per N pezzi -> POST /api/sets/identify intersezione set_parts
+  (min_match = corrispondenza parziale, ignore_color).
+- **Ordini**: cat.elements (element_id max per part+color) -> link LEGO Pick a Brick
+  ?query=element_id, link BrickLink ?P=part&C=bl_id, "copia element ID", CSV -> Rebrickable Buy Parts.
+- **Sync**: sessione cookie per browser; X-Sync-Token (per-utente, in Impostazioni) per
+  sync server-server. peers(url,token,last_sync).
+- **Zero-quantity**: conferma prima di eliminare il pezzo (confirm() in InventoryView).
+- **Auth edge**: /api/me 401 -> frontend mostra LoginView; fetch 401 dispatcha 'bs-unauthorized'.
+
+## Deploy
+- **Locale** (`docker-compose.yml`): `.env` con ADMIN_USER/PASSWORD, porta 8080, ./data.
+- **Produzione** (`docker-compose.prod.yml`): build SUL server (arm64!), porta host 8020,
+  network_mode bridge, path assoluti /home/massimiliano/docker/rebrick-me.
+  Davanti c'e' Nginx Proxy Manager: dominio -> :8020, SSL Let's Encrypt + Force SSL.
+  La porta 8020 NON va esposta pubblicamente (l'app ha il suo login; NPM serve solo HTTPS).
+
+### Server di produzione
+- SSH: `ssh -p 8022 massimiliano@192.168.1.18` (chiave, no password)
+- Deploy: rsync codice + rebuild sul server:
+  ```bash
+  rsync -avz -e "ssh -p 8022" --exclude data --exclude .git --exclude .env \
+    /home/massimiliano/docker/rebrick-me/ massimiliano@192.168.1.18:/home/massimiliano/docker/rebrick-me/
+  ssh -p 8022 massimiliano@192.168.1.18 'cd /home/massimiliano/docker/rebrick-me && \
+    docker compose -f docker-compose.prod.yml up -d --build'
+  ```
+- Utenti attuali sul server: admin + matteo + ernesto. Password admin impostata dall'utente
+  (non nel repo).
+- Catalogo: se serve re-importare -> POST /api/catalog/import con sessione admin,
+  oppure docker exec (MAI in parallelo: bug tmp-file risolto con nome per-pid).
 
 ## Comandi utili
 ```bash
-cp .env.example .env && docker compose up -d --build   # http://localhost:8080 , API docs su /docs
-docker compose logs -f
+docker compose up -d --build        # locale :8080
+docker logs -f brick-scanner
+# test API locale: admin/mattoncino (da .env); server: chiedi password all'utente
 ```
 
+## Gotchas note
+- Server arm64: niente docker save/load dal PC x86, build sul server (cache veloce).
+- Playwright container (screenshot): non risolve nomi container/host.docker.internal;
+  usare IP LAN dell'host (192.168.1.240) da caddy-net.
+- basic-auth NPM + app: non usata; l'app ha login proprio (cookie + sync token).
+- La LAN IP del PC: 192.168.1.240 (e .226). Telefono: https://<dominio NPM> -> PWA installabile.
+
 ## Idee / prossimi passi possibili
-- Testare con foto reali e regolare la segmentazione (parametri in `scan.py`: `min_area`, padding, `MAX_PIECES`).
-- Ricerca anche sui MOC (inventari MOC via Rebrickable API con chiave).
-- HTTPS integrato (servizio Caddy opzionale in compose) per installare la PWA sul telefono.
-- Autenticazione semplice se l'app viene esposta fuori dalla rete di casa (oggi non ce n'è).
-- Sincronizzazione automatica periodica con i peer salvati.
+- Peer sync testata solo con credenziali locali: verificare X-Sync-Token su istanze remote.
+- BrickLink wanted-list XML (richiede bl_id -> chiave Rebrickable configurata).
+- HTTPS/installazione PWA testata su dominio reale; Tailscale non usato (scelto NPM).
+- Sync automatica periodica peer; dedup element_id per data rilascio (oggi MAX).
