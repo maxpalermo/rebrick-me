@@ -1,6 +1,6 @@
 # Brick Scanner
 
-Web app (PWA) per fotografare i propri pezzi LEGO, riconoscerli con l'IA, tenere un inventario e scoprire quali set si possono costruire, con l'elenco dei pezzi mancanti e le istruzioni di montaggio salvate in locale.
+Web app (PWA) per fotografare i propri pezzi LEGO, riconoscerli con l'IA, tenerne un inventario organizzato in **librerie** (luoghi o progetti), scoprire quali set si possono costruire, identificare da quale set provengono pezzi o costruzioni, ordinare i pezzi mancanti e salvare le istruzioni di montaggio in locale.
 
 ## Avvio rapido (Docker)
 
@@ -20,7 +20,7 @@ Al primo avvio il container scarica il catalogo pubblico di Rebrickable (~17 MB,
 | File | Contenuto |
 |---|---|
 | `data/admin.db` | utenti, sessioni di login, token di sincronizzazione |
-| `data/users/<nome>/lego.sqlite` | inventario, progetti salvati, indice istruzioni, peer — per singolo utente |
+| `data/users/<nome>/lego.sqlite` | inventario, librerie, progetti salvati, indice istruzioni, peer, chiave Rebrickable — per singolo utente |
 | `data/users/<nome>/manuals/*.pdf` | istruzioni di montaggio scaricate, disponibili anche offline |
 | `data/catalog.sqlite` | catalogo LEGO condiviso (set, pezzi, colori, inventari dei set); si può rigenerare |
 
@@ -30,19 +30,24 @@ Al primo avvio il container scarica il catalogo pubblico di Rebrickable (~17 MB,
 |---|---|---|
 | [Brickognize](https://brickognize.com) | riconoscimento dei pezzi dalla foto | nessuna |
 | [Rebrickable](https://rebrickable.com/api/) – dump CSV | catalogo locale e calcolo dei set costruibili | nessuna |
-| Rebrickable – API v3 | costruzioni alternative (MOC), mappatura precisa dei codici e dei colori BrickLink → Rebrickable | **opzionale** |
+| Rebrickable – API v3 | costruzioni alternative (MOC), mappatura precisa dei codici e dei colori BrickLink → Rebrickable | **opzionale, per utente** |
 
-Come ottenere la chiave Rebrickable (gratuita):
+La chiave Rebrickable è **personale**: ogni utente incolla la propria in *Impostazioni → Chiave API Rebrickable*. Per ottenerla (gratis):
 1. registrati su https://rebrickable.com/signup/
 2. vai su https://rebrickable.com/users/me/settings/#api e clicca **Generate new key**
-3. scrivila nel file `.env` come `REBRICKABLE_API_KEY=...` ed esegui `docker compose up -d`
+3. incollala nelle Impostazioni dell'app
+
+In alternativa si può impostare `REBRICKABLE_API_KEY=...` nel file `.env` (vale come riserva per tutti gli utenti che non configurano la propria).
 
 ## Come funziona
 
 1. **Scansione**: la foto viene divisa in singoli pezzi con OpenCV (rilevando gli oggetti rispetto allo sfondo), poi ogni ritaglio viene inviato a Brickognize, che restituisce il codice del pezzo e il colore. L'utente conferma o corregge pezzo, colore e quantità.
-2. **Progetti**: l'inventario viene confrontato in SQL con gli inventari di tutti i ~28.000 set del catalogo. I set sono ordinati per percentuale di pezzi posseduti, con un'opzione per ignorare i colori. Il dettaglio di un set mostra i pezzi mancanti, esportabili in CSV per Rebrickable o BrickLink.
-3. **Istruzioni**: il pulsante "Scarica da LEGO.com" scarica i PDF ufficiali (libretti principali ed extra) e li salva in `data/manuals`. In alternativa si può caricare un PDF o indicarne un URL (utile per i MOC).
-4. **Sincronizzazione**: ogni utente ha il proprio SQLite. In *Impostazioni → Sincronizza* si inserisce l'indirizzo di un'altra installazione **e il token del proprio utente** su quell'installazione: inventario, progetti salvati e istruzioni (PDF compresi) vengono uniti in entrambe le direzioni. In alternativa si esporta e importa un backup `.zip`.
+2. **Librerie**: i pezzi si organizzano in librerie personalizzate (es. "Casa mia", "Casa genitori" o un progetto) dalla vista *Pezzi*: filtro per libreria, spostamento di quantità tra librerie, creazione/rinomina/eliminazione (i pezzi di una libreria eliminata passano in "Generale"). Le librerie restano interscambiabili: se in un set manca un pezzo, il dettaglio mostra in quali librerie si trova.
+3. **Progetti**: l'inventario viene confrontato in SQL con gli inventari di tutti i ~28.000 set del catalogo. I set sono ordinati per percentuale di pezzi posseduti, con un'opzione per ignorare i colori.
+4. **Identifica**: due strumenti per capire da dove viene un pezzo o una costruzione — (a) foto di una costruzione completa o minifig → candidati da Brickognize con punteggio; (b) ricerca inversa: si indicano alcuni pezzi distintivi e l'app trova i set che li contengono tutti (con opzioni di corrispondenza parziale e "ignora colori").
+5. **Ordini**: il dettaglio set elenca i pezzi mancanti con element ID LEGO (link diretto a Pick a Brick, lista copiabile), link alla pagina BrickLink del pezzo e CSV esportabile per Rebrickable → Buy Parts.
+6. **Istruzioni**: il pulsante "Scarica da LEGO.com" scarica i PDF ufficiali (libretti principali ed extra) e li salva in `data/manuals`. In alternativa si può caricare un PDF o indicarne un URL (utile per i MOC).
+7. **Sincronizzazione**: ogni utente ha il proprio SQLite. In *Impostazioni → Sincronizza* si inserisce l'indirizzo di un'altra installazione **e il token del proprio utente** su quell'installazione: inventario, librerie, progetti salvati e istruzioni (PDF compresi) vengono uniti in entrambe le direzioni. In alternativa si esporta e importa un backup `.zip`.
    L'inventario è un CRDT: ogni dispositivo registra il proprio contributo per ogni pezzo e il totale è la somma dei contributi. In questo modo i pezzi scansionati su dispositivi diversi si sommano senza conflitti e senza duplicazioni.
 
 ## Cellulare

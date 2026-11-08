@@ -7,7 +7,7 @@ Web app PWA per fotografare pezzi LEGO: l'IA li riconosce, l'app tiene l'inventa
 quali set si possono costruire (con pezzi mancanti ordinabili), salva le istruzioni PDF offline,
 identifica da quale set provengono pezzi o costruzioni complete, sincronizza tra dispositivi.
 
-## Stato attuale: v0.3 in produzione
+## Stato attuale: v0.4 in produzione
 App multi-utente deployata sul server di produzione (vedi sotto) e sul PC locale.
 Testato end-to-end: login, creazione utenti, isolamento inventari, scansione pezzi,
 identificazione set da foto (BrickHeadz Batman -> 41585-1), intersezione pezzi->set

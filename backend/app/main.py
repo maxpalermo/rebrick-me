@@ -18,7 +18,7 @@ from .db import (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-app = FastAPI(title="Brick Scanner", version="0.2.0")
+app = FastAPI(title="Brick Scanner", version="0.4.0")
 
 
 @app.on_event("startup")
