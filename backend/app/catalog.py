@@ -10,7 +10,6 @@ import time
 
 import httpx
 
-from .admin_db import get_rebrickable_key
 from .config import CATALOG_DB, REBRICKABLE_DOWNLOADS
 
 log = logging.getLogger("catalog")
@@ -65,8 +64,7 @@ def _int(v: str):
     return int(v) if v not in ("", None) else None
 
 
-def _fetch_bricklink_color_ids(client: httpx.Client) -> dict[int, int]:
-    key = get_rebrickable_key()
+def _fetch_bricklink_color_ids(client: httpx.Client, key: str) -> dict[int, int]:
     if not key:
         return {}
     try:
@@ -88,7 +86,7 @@ def _fetch_bricklink_color_ids(client: httpx.Client) -> dict[int, int]:
         return {}
 
 
-def import_catalog() -> None:
+def import_catalog(api_key: str = "") -> None:
     if not _lock.acquire(blocking=False):
         return
     tmp = CATALOG_DB.with_name(f"catalog.{os.getpid()}.tmp")
@@ -101,7 +99,7 @@ def import_catalog() -> None:
                 r = client.get(f"{REBRICKABLE_DOWNLOADS}/{name}.csv.gz")
                 r.raise_for_status()
                 raw[name] = r.content
-            bl_colors = _fetch_bricklink_color_ids(client)
+            bl_colors = _fetch_bricklink_color_ids(client, api_key)
 
         if tmp.exists():
             tmp.unlink()
@@ -174,5 +172,5 @@ def import_catalog() -> None:
         _lock.release()
 
 
-def start_import_thread() -> None:
-    threading.Thread(target=import_catalog, daemon=True).start()
+def start_import_thread(api_key: str = "") -> None:
+    threading.Thread(target=import_catalog, args=(api_key,), daemon=True).start()

@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 import time
 
-from .config import ADMIN_DB, ADMIN_PASSWORD, ADMIN_USER, REBRICKABLE_API_KEY
+from .config import ADMIN_DB, ADMIN_PASSWORD, ADMIN_USER
 
 log = logging.getLogger(__name__)
 
@@ -201,7 +201,3 @@ def set_setting(key: str, value: str) -> None:
             (key, value),
         )
 
-
-def get_rebrickable_key() -> str:
-    """Rebrickable API key saved via the admin UI, falling back to the env var."""
-    return get_setting("rebrickable_api_key") or REBRICKABLE_API_KEY

@@ -22,10 +22,12 @@ backend/app/
   config.py    env: DATA_DIR, ADMIN_USER, ADMIN_PASSWORD, DEVICE_NAME, REBRICKABLE_API_KEY,
                AUTO_IMPORT_CATALOG, USERS_DIR=data/users, ADMIN_DB=data/admin.db
   admin_db.py  admin.db: users (pbkdf2), sessions (cookie bs_session 30gg), sync_tokens,
-               settings (chiave Rebrickable salvata da UI via get_rebrickable_key())
+               settings (tabella kv site-wide; la chiave Rebrickable NON e' piu' qui)
   db.py        lego.sqlite PER-UTENTE in users/<nome>/ + ATTACH "cat" (catalogo condiviso);
                get_db(username) inizializza lazy; migrate_legacy() sposta il vecchio
-               data/lego.sqlite in users/<ADMIN_USER>/ al primo avvio
+               data/lego.sqlite in users/<ADMIN_USER>/ al primo avvio;
+               meta kv per-utente: device_id, device_name, rebrickable_api_key
+               (rebrickable_key(conn) -> chiave utente o fallback env)
   catalog.py   dump CSV Rebrickable -> catalog.sqlite (set_parts, elements element_id LEGO,
                part_images...). Import via thread; tmp file per-process (fix race)
   scan.py      OpenCV segmenta pezzi -> Brickognize /predict/parts; scan_build_image()
@@ -48,9 +50,12 @@ frontend/src/
 ### Decisioni chiave
 - **Multi-utente**: un DB per utente (isolamento fisico, query invariate). Admin crea utenti
   da #/admin; admin è anche utente col suo inventario. Nessuna registrazione pubblica.
-- **Chiave Rebrickable**: salvata in admin.db.settings da Impostazioni (admin), letta runtime
-  da get_rebrickable_key(); env REBRICKABLE_API_KEY = fallback. Abilita MOC, bl_id colore,
-  mappatura BrickLink precisa.
+- **Chiave Rebrickable**: PER-UTENTE in users/<nome>/lego.sqlite meta.rebrickable_api_key,
+  salvata da Impostazioni (ogni utente la propria). Passata come parametro a scan/catalog/
+  alternates (nessun accesso globale); env REBRICKABLE_API_KEY = fallback per chi non la
+  configura. All'avvio una vecchia chiave site-wide in admin.db.settings viene migrata nel
+  profilo ADMIN_USER. Abilita MOC, bl_id colore, mappatura BrickLink precisa.
+  Non sincronizzata via sync (ogni installazione la reinserisce).
 - **Identifica**: (a) foto costruzione -> predict/sets+figs -> candidati con score, click->dettaglio;
   (b) ricerca inversa per N pezzi -> POST /api/sets/identify intersezione set_parts
   (min_match = corrispondenza parziale, ignore_color).

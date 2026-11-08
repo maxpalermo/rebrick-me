@@ -7,10 +7,12 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import admin_db, catalog, manuals, scan, sync
-from .config import AUTO_IMPORT_CATALOG, CATALOG_DB, REBRICKABLE_API_KEY, SESSION_COOKIE, STATIC_DIR
+from .config import (
+    ADMIN_USER, AUTO_IMPORT_CATALOG, CATALOG_DB, REBRICKABLE_API_KEY, SESSION_COOKIE, STATIC_DIR,
+)
 from .db import (
-    catalog_ready, device_id, device_name, get_db, get_quantity, manuals_dir, migrate_legacy, now_ms, set_quantity,
-    user_dir,
+    catalog_ready, device_id, device_name, get_db, get_quantity, manuals_dir, migrate_legacy, now_ms,
+    rebrickable_key, set_quantity, set_rebrickable_key, user_dir,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -21,6 +23,13 @@ app = FastAPI(title="Brick Scanner", version="0.2.0")
 def startup() -> None:
     admin_db.init_admin_db()
     migrate_legacy()
+    site_key = admin_db.get_setting("rebrickable_api_key")
+    if site_key:  # pre-per-user-key installs: hand the site key to the admin who configured it
+        with get_db(ADMIN_USER) as conn:
+            conn.execute("INSERT OR IGNORE INTO meta VALUES ('rebrickable_api_key', ?)", (site_key,))
+        admin_db.set_setting("rebrickable_api_key", "")
+        log = logging.getLogger(__name__)
+        log.info("chiave Rebrickable migrata nel profilo di '%s'", ADMIN_USER)
     ready = False
     if CATALOG_DB.exists():
         conn = sqlite3.connect(CATALOG_DB)
@@ -32,7 +41,7 @@ def startup() -> None:
     if ready:
         catalog.status.update(state="ready", message="Catalogo pronto", progress=1.0)
     elif AUTO_IMPORT_CATALOG:
-        catalog.start_import_thread()
+        catalog.start_import_thread(REBRICKABLE_API_KEY)
 
 
 # ---------- auth ----------
@@ -133,7 +142,7 @@ def status(user: dict = Depends(current_user)):
         info = {
             "device_id": device_id(conn),
             "device_name": device_name(conn),
-            "rebrickable_key": bool(admin_db.get_rebrickable_key()),
+            "rebrickable_key": bool(rebrickable_key(conn)),
             "catalog": dict(catalog.status),
             "inventory": {"distinct": 0, "total": 0},
         }
@@ -150,7 +159,9 @@ def status(user: dict = Depends(current_user)):
 def catalog_import(user: dict = Depends(current_user)):
     if catalog.status["state"] == "running":
         return {"started": False}
-    catalog.start_import_thread()
+    with get_db(user["username"]) as conn:
+        key = rebrickable_key(conn)
+    catalog.start_import_thread(key)
     return {"started": True}
 
 
@@ -185,7 +196,7 @@ async def scan_photo(image: UploadFile = File(...), segment: bool = Form(True), 
     with get_db(user["username"]) as conn:
         require_catalog(conn)
         try:
-            return await scan.scan_image(conn, data, segment=segment)
+            return await scan.scan_image(conn, data, segment=segment, api_key=rebrickable_key(conn))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -400,7 +411,8 @@ def sets_identify(data: dict = Body(...), user: dict = Depends(current_user)):
 @app.get("/api/sets/{set_num}/alternates")
 async def set_alternates(set_num: str, user: dict = Depends(current_user)):
     """Alternative builds (MOCs) from Rebrickable. Requires a Rebrickable API key."""
-    key = admin_db.get_rebrickable_key()
+    with get_db(user["username"]) as conn:
+        key = rebrickable_key(conn)
     if not key:
         return {"available": False, "results": []}
     async with httpx.AsyncClient(timeout=30) as client:
@@ -597,9 +609,11 @@ def set_device_name(name: str = Body(..., embed=True), user: dict = Depends(curr
 
 
 @app.get("/api/settings/rebrickable-key")
-def rebrickable_key_get(admin: dict = Depends(require_admin)):
-    stored = admin_db.get_setting("rebrickable_api_key")
-    key = admin_db.get_rebrickable_key()
+def rebrickable_key_get(user: dict = Depends(current_user)):
+    with get_db(user["username"]) as conn:
+        stored = conn.execute("SELECT value FROM meta WHERE key='rebrickable_api_key'").fetchone()
+        stored = stored[0] if stored else ""
+        key = stored or REBRICKABLE_API_KEY
     return {
         "configured": bool(key),
         "source": "ui" if stored else ("env" if key else None),
@@ -608,9 +622,11 @@ def rebrickable_key_get(admin: dict = Depends(require_admin)):
 
 
 @app.post("/api/settings/rebrickable-key")
-def rebrickable_key_set(data: dict = Body(...), admin: dict = Depends(require_admin)):
-    admin_db.set_setting("rebrickable_api_key", (data.get("key") or "").strip())
-    return {"ok": True, "configured": bool(admin_db.get_rebrickable_key())}
+def rebrickable_key_set(data: dict = Body(...), user: dict = Depends(current_user)):
+    with get_db(user["username"]) as conn:
+        set_rebrickable_key(conn, (data.get("key") or "").strip())
+        configured = bool(rebrickable_key(conn))
+    return {"ok": True, "configured": configured}
 
 
 @app.get("/api/settings/sync-token")

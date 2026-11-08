@@ -5,7 +5,9 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .config import ADMIN_USER, CATALOG_DB, DATA_DIR, DEVICE_NAME, MANUALS_DIR, USER_DB, USERS_DIR
+from .config import (
+    ADMIN_USER, CATALOG_DB, DATA_DIR, DEVICE_NAME, MANUALS_DIR, REBRICKABLE_API_KEY, USER_DB, USERS_DIR,
+)
 
 log = logging.getLogger(__name__)
 
@@ -146,6 +148,20 @@ def device_id(conn: sqlite3.Connection) -> str:
 def device_name(conn: sqlite3.Connection) -> str:
     row = conn.execute("SELECT value FROM meta WHERE key='device_name'").fetchone()
     return row[0] if row else device_id(conn)
+
+
+def rebrickable_key(conn: sqlite3.Connection) -> str:
+    """Per-user Rebrickable API key (meta table), falling back to the env var."""
+    row = conn.execute("SELECT value FROM meta WHERE key='rebrickable_api_key'").fetchone()
+    return (row[0] if row and row[0] else "") or REBRICKABLE_API_KEY
+
+
+def set_rebrickable_key(conn: sqlite3.Connection, key: str) -> None:
+    conn.execute(
+        "INSERT INTO meta VALUES ('rebrickable_api_key', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key,),
+    )
 
 
 def set_quantity(conn: sqlite3.Connection, part_num: str, color_id: int, total: int) -> None:

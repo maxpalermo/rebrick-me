@@ -7,7 +7,6 @@ import cv2
 import httpx
 import numpy as np
 
-from .admin_db import get_rebrickable_key
 from .config import BRICKOGNIZE_URL
 
 log = logging.getLogger("scan")
@@ -67,8 +66,7 @@ async def _brickognize(client: httpx.AsyncClient, jpeg: bytes) -> dict:
     return r.json()
 
 
-async def _rebrickable_part_by_bricklink(client: httpx.AsyncClient, bl_id: str) -> str | None:
-    key = get_rebrickable_key()
+async def _rebrickable_part_by_bricklink(client: httpx.AsyncClient, bl_id: str, key: str) -> str | None:
     if not key:
         return None
     try:
@@ -85,13 +83,14 @@ async def _rebrickable_part_by_bricklink(client: httpx.AsyncClient, bl_id: str) 
         return None
 
 
-async def resolve_part(conn: sqlite3.Connection, client: httpx.AsyncClient, bl_id: str) -> str | None:
+async def resolve_part(conn: sqlite3.Connection, client: httpx.AsyncClient, bl_id: str,
+                       api_key: str = "") -> str | None:
     if conn.execute("SELECT 1 FROM cat.parts WHERE part_num=?", (bl_id,)).fetchone():
         return bl_id
     row = conn.execute("SELECT part_num FROM cat.part_alias WHERE alias=?", (bl_id,)).fetchone()
     if row:
         return row[0]
-    part = await _rebrickable_part_by_bricklink(client, bl_id)
+    part = await _rebrickable_part_by_bricklink(client, bl_id, api_key)
     if part:
         conn.execute("INSERT OR REPLACE INTO cat.part_alias VALUES (?,?)", (bl_id, part))
         conn.commit()
@@ -178,7 +177,8 @@ async def scan_build_image(conn: sqlite3.Connection, image_bytes: bytes) -> dict
     return {"candidates": candidates, "figs": figs, "error": sets_res.get("error")}
 
 
-async def scan_image(conn: sqlite3.Connection, image_bytes: bytes, segment: bool = True) -> dict:
+async def scan_image(conn: sqlite3.Connection, image_bytes: bytes, segment: bool = True,
+                     api_key: str = "") -> dict:
     img = _load(image_bytes)
     h, w = img.shape[:2]
     boxes = segment_pieces(img) if segment else []
@@ -202,7 +202,7 @@ async def scan_image(conn: sqlite3.Connection, image_bytes: bytes, segment: bool
         for idx, (box, res) in enumerate(zip(boxes, results)):
             candidates = []
             for item in (res.get("items") or [])[:5]:
-                part_num = await resolve_part(conn, client, item["id"])
+                part_num = await resolve_part(conn, client, item["id"], api_key)
                 cat_name = None
                 if part_num:
                     row = conn.execute("SELECT name FROM cat.parts WHERE part_num=?", (part_num,)).fetchone()
