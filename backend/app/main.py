@@ -121,6 +121,11 @@ def require_catalog(conn: sqlite3.Connection) -> None:
         raise HTTPException(503, "Catalogo non ancora importato. Vai in Impostazioni.")
 
 
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
 # ---------- status ----------
 @app.get("/api/status")
 def status(user: dict = Depends(current_user)):
