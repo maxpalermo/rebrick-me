@@ -1,0 +1,35 @@
+# Brick Scanner — produzione su server con Nginx Proxy Manager
+#
+# NOTA: il server e' arm64 -> buildare SUL server, non copiare l'immagine dal PC (x86).
+#
+# NPM (Nginx Proxy Manager):
+#   Proxy Host  brick.<tuodominio> -> http://<ip-server>:8020
+#   SSL         Let's Encrypt, Force SSL, HTTP/2
+#   Access List basic auth OBBLIGATORIA: l'app non ha login interno,
+#              senza auth chiunque con l'URL puo' modificare l'inventario
+services:
+  brick-scanner:
+    build:
+      context: /home/massimiliano/docker/rebrick-me
+      dockerfile: Dockerfile
+    image: brick-scanner:latest
+    container_name: brick-scanner
+    hostname: brick-scanner
+    restart: unless-stopped
+    ports:
+      - 8020:8000
+    environment:
+      - TZ=Europe/Rome
+      - DATA_DIR=/data
+      - DEVICE_NAME=server
+      # Primo avvio: crea l'utente amministratore. Se ADMIN_PASSWORD e' vuota
+      # ne genera una casuale e la stampa nei log (docker logs brick-scanner).
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=
+      # opzionale: MOC alternativi e mappatura colori piu' precisa
+      # - REBRICKABLE_API_KEY=...
+    volumes:
+      - /home/massimiliano/docker/rebrick-me/data:/data
+    network_mode: bridge
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

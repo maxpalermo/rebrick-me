@@ -4,9 +4,10 @@ import re
 import sqlite3
 import uuid
 
+from pathlib import Path
+
 import httpx
 
-from .config import MANUALS_DIR
 from .db import device_id, now_ms
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -18,11 +19,12 @@ def lego_instructions_page(set_num: str) -> str:
     return f"https://www.lego.com/it-it/service/building-instructions/{set_num.split('-')[0]}"
 
 
-def store_pdf(conn: sqlite3.Connection, set_num: str, title: str, data: bytes, source_url: str | None) -> dict:
+def store_pdf(conn: sqlite3.Connection, manuals_dir: Path, set_num: str, title: str, data: bytes,
+              source_url: str | None) -> dict:
     if not data.startswith(b"%PDF"):
         raise ValueError("Il file non è un PDF valido")
     sha = hashlib.sha256(data).hexdigest()
-    path = MANUALS_DIR / f"{sha}.pdf"
+    path = manuals_dir / f"{sha}.pdf"
     if not path.exists():
         path.write_bytes(data)
     existing = conn.execute("SELECT id FROM manuals WHERE set_num=? AND sha256=?", (set_num, sha)).fetchone()
@@ -43,7 +45,7 @@ async def download_pdf(url: str) -> bytes:
         return r.content
 
 
-async def fetch_from_lego(conn: sqlite3.Connection, set_num: str, set_name: str) -> list[dict]:
+async def fetch_from_lego(conn: sqlite3.Connection, manuals_dir: Path, set_num: str, set_name: str) -> list[dict]:
     page = lego_instructions_page(set_num)
     async with httpx.AsyncClient(timeout=60, follow_redirects=True,
                                  headers={"User-Agent": UA, "Accept-Language": "it-IT,it;q=0.9,en;q=0.8"}) as client:
@@ -66,7 +68,7 @@ async def fetch_from_lego(conn: sqlite3.Connection, set_num: str, set_name: str)
                     title = f"{set_name} - libretto {core.index(u) + 1}" if len(core) > 1 else set_name
                 else:
                     title = f"{set_name} - extra: {u.rsplit('/', 1)[-1][:-4].replace('_', ' ')}"
-                stored.append(store_pdf(conn, set_num, title, pdf.content, u))
+                stored.append(store_pdf(conn, manuals_dir, set_num, title, pdf.content, u))
         if not stored:
             raise RuntimeError("Download dei PDF da lego.com non riuscito")
         return stored

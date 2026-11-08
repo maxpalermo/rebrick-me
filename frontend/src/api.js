@@ -5,6 +5,7 @@ async function handle(res) {
       const j = await res.json()
       if (j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
     } catch {}
+    if (res.status === 401) window.dispatchEvent(new CustomEvent('bs-unauthorized'))
     throw new Error(msg)
   }
   const ct = res.headers.get('content-type') || ''

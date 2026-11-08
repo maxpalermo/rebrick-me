@@ -1,9 +1,13 @@
+import logging
 import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 
-from .config import CATALOG_DB, DEVICE_NAME, USER_DB
+from .config import ADMIN_USER, CATALOG_DB, DATA_DIR, DEVICE_NAME, MANUALS_DIR, USER_DB, USERS_DIR
+
+log = logging.getLogger(__name__)
 
 USER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -42,17 +46,31 @@ CREATE TABLE IF NOT EXISTS saved_projects (
 );
 CREATE TABLE IF NOT EXISTS peers (
     url TEXT PRIMARY KEY,
+    token TEXT,
     last_sync INTEGER
 );
 """
+
+_initialized: set[str] = set()
 
 
 def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(USER_DB, timeout=30)
+def user_dir(username: str) -> Path:
+    return USERS_DIR / username
+
+
+def manuals_dir(username: str) -> Path:
+    d = user_dir(username) / "manuals"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _connect(username: str) -> sqlite3.Connection:
+    user_dir(username).mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(user_dir(username) / "lego.sqlite", timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -61,14 +79,56 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _init_user_db(conn: sqlite3.Connection, username: str) -> None:
+    conn.executescript(USER_SCHEMA)
+    try:  # column added after the first multi-user release
+        conn.execute("ALTER TABLE peers ADD COLUMN token TEXT")
+    except sqlite3.Error:
+        pass
+    if not conn.execute("SELECT 1 FROM meta WHERE key='device_id'").fetchone():
+        conn.execute("INSERT INTO meta VALUES ('device_id', ?)", (uuid.uuid4().hex[:12],))
+    if not conn.execute("SELECT 1 FROM meta WHERE key='device_name'").fetchone():
+        conn.execute("INSERT INTO meta VALUES ('device_name', ?)", (DEVICE_NAME or username,))
+
+
 @contextmanager
-def get_db():
-    conn = _connect()
+def get_db(username: str):
+    conn = _connect(username)
     try:
+        if username not in _initialized:
+            _init_user_db(conn, username)
+            _initialized.add(username)
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def migrate_legacy() -> None:
+    """Move a pre-multi-user data/lego.sqlite (+ manuals) into the admin user's directory."""
+    if not USER_DB.exists():
+        return
+    target = user_dir(ADMIN_USER)
+    target.mkdir(parents=True, exist_ok=True)
+    if (target / "lego.sqlite").exists():
+        USER_DB.rename(DATA_DIR / "lego.sqlite.preusers-backup")
+        log.warning("db: trovato sia %s sia il DB di '%s'; il vecchio file e' stato rinominato lego.sqlite.preusers-backup",
+                    USER_DB.name, ADMIN_USER)
+    else:
+        for suffix in ("", "-wal", "-shm"):
+            f = DATA_DIR / f"lego.sqlite{suffix}"
+            if f.exists():
+                f.rename(target / f.name)
+        log.info("db: inventario esistente migrato in users/%s/", ADMIN_USER)
+    mdir = manuals_dir(ADMIN_USER)
+    if MANUALS_DIR.is_dir():
+        moved = 0
+        for pdf in MANUALS_DIR.glob("*.pdf"):
+            if not (mdir / pdf.name).exists():
+                pdf.rename(mdir / pdf.name)
+                moved += 1
+        if moved:
+            log.info("db: %d manuali migrati in users/%s/manuals/", moved, ADMIN_USER)
 
 
 def catalog_ready(conn: sqlite3.Connection) -> bool:
@@ -77,15 +137,6 @@ def catalog_ready(conn: sqlite3.Connection) -> bool:
         return row is not None
     except sqlite3.Error:
         return False
-
-
-def init_db() -> None:
-    with get_db() as conn:
-        conn.executescript(USER_SCHEMA)
-        if not conn.execute("SELECT 1 FROM meta WHERE key='device_id'").fetchone():
-            conn.execute("INSERT INTO meta VALUES ('device_id', ?)", (uuid.uuid4().hex[:12],))
-        if DEVICE_NAME:
-            conn.execute("INSERT OR REPLACE INTO meta VALUES ('device_name', ?)", (DEVICE_NAME,))
 
 
 def device_id(conn: sqlite3.Connection) -> str:

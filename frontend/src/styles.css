@@ -132,3 +132,55 @@ main { overflow-x: hidden; }
 @media (max-width: 560px) {
   img.set-img-l, .img-ph.set-img-l { width: 100%; }
 }
+
+/* ---------- login ---------- */
+.login-wrap {
+  position: fixed; inset: 0; overflow: hidden;
+  background: linear-gradient(160deg, #8fc9f2 0%, #4a97d8 55%, #1f5fa8 100%);
+  display: flex; align-items: center; justify-content: center;
+}
+.login-brick {
+  position: absolute; top: -120px; border-radius: 7px;
+  background-image: radial-gradient(circle at 11px 7px, rgba(255,255,255,.55) 4px, rgba(0,0,0,.1) 4.8px, transparent 6px);
+  background-size: 22px 14px; background-repeat: repeat-x;
+  box-shadow: 0 5px 0 rgba(0,0,0,.15);
+  opacity: .92; will-change: transform;
+  animation: brick-fall linear infinite;
+}
+@keyframes brick-fall {
+  from { transform: translateY(0) rotate(-14deg); }
+  to { transform: translateY(135vh) rotate(346deg); }
+}
+.login-card {
+  position: relative; background: #fff; border-radius: 16px;
+  padding: 1.7em 1.4em 1.4em; width: min(92vw, 370px);
+  box-shadow: 0 24px 60px rgba(0,0,0,.35);
+  display: flex; flex-direction: column;
+}
+.login-card .studs { position: absolute; top: -13px; left: 0; right: 0; display: flex; justify-content: center; gap: 12px; }
+.login-card .studs i { display: block; width: 36px; height: 15px; background: #fff; border-radius: 9px 9px 4px 4px; box-shadow: inset 0 -3px 0 rgba(0,0,0,.1); }
+.login-title { text-align: center; font-weight: 800; font-size: 1.45rem; margin: 0.15em 0 0.1em; }
+.login-sub { text-align: center; margin: 0 0 1em; }
+.login-card.shake { animation: login-shake 0.45s; }
+@keyframes login-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-9px); }
+  40% { transform: translateX(9px); }
+  60% { transform: translateX(-6px); }
+  80% { transform: translateX(6px); }
+}
+.splash {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  font-size: 4rem; animation: splash-pulse 0.9s ease-in-out infinite alternate;
+}
+@keyframes splash-pulse {
+  from { transform: scale(0.9); opacity: 0.55; }
+  to { transform: scale(1.12); opacity: 1; }
+}
+.header-user { opacity: 0.85; font-weight: 600; }
+.pw-wrap { position: relative; display: flex; margin-top: 0.7em; }
+.pw-wrap input { padding-right: 2.6em; }
+.pw-eye {
+  position: absolute; right: 0.25em; top: 50%; transform: translateY(-50%);
+  border: none; background: none; padding: 0.3em; font-size: 1.1rem; line-height: 1;
+}

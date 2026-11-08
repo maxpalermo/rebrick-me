@@ -686,22 +686,32 @@ function ManualsView({ notify }) {
 }
 
 /* ---------------- Settings ---------------- */
-function SettingsView({ status, refresh, notify }) {
+function SettingsView({ status, refresh, notify, me, onLogout }) {
   const [peer, setPeer] = useState('')
+  const [peerToken, setPeerToken] = useState('')
   const [peers, setPeers] = useState([])
+  const [syncToken, setSyncToken] = useState('')
   const [busy, setBusy] = useState(false)
   const [name, setName] = useState(status?.device_name || '')
   const restoreRef = useRef()
 
   useEffect(() => {
     api.get('/api/sync/peers').then(setPeers).catch(() => {})
+    api.get('/api/settings/sync-token').then((r) => setSyncToken(r.token)).catch(() => {})
   }, [])
   useEffect(() => setName(status?.device_name || ''), [status?.device_name])
 
-  const syncPeer = async (url) => {
+  const regenToken = async () => {
+    if (!confirm('Rigenerare il token? Quello attuale smetterà di funzionare sulle altre installazioni.')) return
+    const r = await api.post('/api/settings/sync-token/regenerate')
+    setSyncToken(r.token)
+    notify('Token rigenerato')
+  }
+
+  const syncPeer = async (url, token) => {
     setBusy(true)
     try {
-      const r = await api.post('/api/sync/peer', { url })
+      const r = await api.post('/api/sync/peer', { url, token: token || '' })
       notify(`Sincronizzato: ricevuti ${r.pulled.inventory} pezzi, inviati ${r.pushed.inventory ?? 0}`)
       api.get('/api/sync/peers').then(setPeers)
       refresh()
@@ -728,6 +738,34 @@ function SettingsView({ status, refresh, notify }) {
   return (
     <div className="view">
       <h2>Impostazioni</h2>
+      <div className="card">
+        <h3>👤 Account</h3>
+        <div className="row between wrap">
+          <span>
+            Accesso come <b>{me.username}</b>
+            {me.is_admin ? ' (amministratore)' : ''}
+          </span>
+          <button onClick={onLogout}>Esci</button>
+        </div>
+        <h3 className="mt">Token di sincronizzazione</h3>
+        <p className="muted small">
+          Serve a sincronizzare questo account con un'altra installazione di Brick Scanner: incollalo nel campo "token"
+          dell'altro dispositivo.
+        </p>
+        <div className="row gap">
+          <input readOnly value={syncToken} onFocus={(e) => e.target.select()} />
+          <button
+            className="small"
+            onClick={() => navigator.clipboard?.writeText(syncToken).then(() => notify('Token copiato'))}
+            title="Copia"
+          >
+            📋
+          </button>
+          <button className="small" onClick={regenToken} title="Rigenera">
+            🔄
+          </button>
+        </div>
+      </div>
       <div className="card">
         <h3>Catalogo LEGO (Rebrickable)</h3>
         {c && (
@@ -795,15 +833,22 @@ function SettingsView({ status, refresh, notify }) {
       <div className="card">
         <h3>🔁 Sincronizza con un altro dispositivo</h3>
         <p className="muted small">
-          Inserisci l'indirizzo di un'altra installazione di Brick Scanner (es. <code>http://192.168.1.20:8080</code>). Inventario,
-          progetti salvati e istruzioni vengono uniti in entrambe le direzioni.
+          Inserisci l'indirizzo di un'altra installazione di Brick Scanner e il token del tuo utente su quell'installazione
+          (Impostazioni → Token di sincronizzazione). Inventario, progetti salvati e istruzioni vengono uniti in entrambe le
+          direzioni.
         </p>
         <div className="row gap">
-          <input value={peer} onChange={(e) => setPeer(e.target.value)} placeholder="http://indirizzo:8080" />
-          <button className="primary" disabled={busy || !peer} onClick={() => syncPeer(peer)}>
+          <input value={peer} onChange={(e) => setPeer(e.target.value)} placeholder="https://indirizzo:8080" />
+          <button className="primary" disabled={busy || !peer} onClick={() => syncPeer(peer, peerToken)}>
             {busy ? 'Sincronizzo…' : 'Sincronizza'}
           </button>
         </div>
+        <input
+          className="mt"
+          value={peerToken}
+          onChange={(e) => setPeerToken(e.target.value)}
+          placeholder="Token del tuo utente sull'altra installazione"
+        />
         {peers.length > 0 && (
           <div className="list mt">
             {peers.map((p) => (
@@ -811,7 +856,7 @@ function SettingsView({ status, refresh, notify }) {
                 <span className="small">
                   {p.url} · {p.last_sync ? new Date(p.last_sync).toLocaleString('it-IT') : 'mai'}
                 </span>
-                <button className="small" disabled={busy} onClick={() => syncPeer(p.url)}>
+                <button className="small" disabled={busy} onClick={() => syncPeer(p.url, p.token || '')}>
                   Sincronizza ora
                 </button>
               </div>
@@ -832,9 +877,186 @@ function SettingsView({ status, refresh, notify }) {
   )
 }
 
+/* ---------------- Login ---------------- */
+const BRICK_COLORS = ['#d01012', '#ffcf00', '#006db7', '#00a550', '#fe8a18', '#e3008c', '#7dc142']
+
+function LoginView({ onLogin }) {
+  const [u, setU] = useState('')
+  const [p, setP] = useState('')
+  const [showPw, setShowPw] = useState(false)
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [shake, setShake] = useState(false)
+
+  const bricks = useMemo(
+    () =>
+      Array.from({ length: 16 }, (_, i) => ({
+        left: `${(i * 67) % 96}%`,
+        color: BRICK_COLORS[i % BRICK_COLORS.length],
+        w: 34 + (i % 4) * 18,
+        delay: `${-((i * 1.7) % 12).toFixed(1)}s`,
+        dur: `${(7 + ((i * 2.3) % 7)).toFixed(1)}s`,
+      })),
+    []
+  )
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr('')
+    try {
+      await api.post('/api/login', { username: u.trim(), password: p })
+      onLogin(await api.get('/api/me'))
+    } catch (ex) {
+      setErr(ex.message)
+      setShake(true)
+      setTimeout(() => setShake(false), 500)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="login-wrap">
+      {bricks.map((b, i) => (
+        <div
+          key={i}
+          className="login-brick"
+          style={{ left: b.left, width: b.w, height: b.w * 0.55, background: b.color, animationDuration: b.dur, animationDelay: b.delay }}
+        />
+      ))}
+      <form className={'login-card' + (shake ? ' shake' : '')} onSubmit={submit}>
+        <div className="studs">
+          <i />
+          <i />
+          <i />
+          <i />
+        </div>
+        <div className="login-title">🧱 Brick Scanner</div>
+        <p className="muted small login-sub">Fotografa, colleziona, costruisci!</p>
+        <input autoFocus autoComplete="username" placeholder="Utente" value={u} onChange={(e) => setU(e.target.value)} />
+        <div className="pw-wrap">
+          <input
+            type={showPw ? 'text' : 'password'}
+            autoComplete="current-password"
+            placeholder="Password"
+            value={p}
+            onChange={(e) => setP(e.target.value)}
+          />
+          <button
+            type="button"
+            className="pw-eye"
+            onClick={() => setShowPw(!showPw)}
+            title={showPw ? 'Nascondi password' : 'Mostra password'}
+            tabIndex={-1}
+          >
+            {showPw ? '🙈' : '👁️'}
+          </button>
+        </div>
+        {err && <p className="error small">{err}</p>}
+        <button className="primary big mt" disabled={busy || !u || !p}>
+          {busy ? 'Costruisco…' : '🧱 Entra'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
+/* ---------------- Admin ---------------- */
+function AdminView({ notify }) {
+  const [users, setUsers] = useState(null)
+  const [nu, setNu] = useState({ username: '', password: '', is_admin: false })
+
+  const load = useCallback(() => api.get('/api/admin/users').then(setUsers).catch((e) => notify(e.message, true)), [notify])
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const create = async (e) => {
+    e.preventDefault()
+    try {
+      await api.post('/api/admin/users', nu)
+      notify(`Utente "${nu.username}" creato`)
+      setNu({ username: '', password: '', is_admin: false })
+      load()
+    } catch (ex) {
+      notify(ex.message, true)
+    }
+  }
+
+  const resetPw = async (u) => {
+    const password = prompt(`Nuova password per "${u.username}":`)
+    if (!password) return
+    try {
+      await api.post(`/api/admin/users/${u.username}/password`, { password })
+      notify('Password aggiornata')
+    } catch (ex) {
+      notify(ex.message, true)
+    }
+  }
+
+  const remove = async (u) => {
+    if (!confirm(`Eliminare l'utente "${u.username}"? Il suo inventario sul server non viene cancellato.`)) return
+    try {
+      await api.del(`/api/admin/users/${u.username}`)
+      notify('Utente eliminato')
+      load()
+    } catch (ex) {
+      notify(ex.message, true)
+    }
+  }
+
+  return (
+    <div className="view">
+      <h2>🛠️ Amministrazione</h2>
+      <div className="card">
+        <h3>Utenti</h3>
+        <div className="list">
+          {users?.map((u) => (
+            <div key={u.username} className="inv">
+              <div className="grow">
+                <div className="title">
+                  {u.username} {!!u.is_admin && <span className="badge">admin</span>}
+                </div>
+                <div className="muted small">
+                  {u.pieces} pezzi · {u.manuals} manuali · creato il {new Date(u.created_at).toLocaleDateString('it-IT')}
+                </div>
+              </div>
+              <button className="small" onClick={() => resetPw(u)}>
+                🔑 Password
+              </button>
+              <button className="small" onClick={() => remove(u)}>
+                🗑
+              </button>
+            </div>
+          ))}
+          {users && users.length === 0 && <p className="muted">Nessun utente.</p>}
+        </div>
+      </div>
+      <form className="card" onSubmit={create}>
+        <h3>Crea utente</h3>
+        <input
+          placeholder="Nome utente (minuscole, numeri, . _ -)"
+          value={nu.username}
+          onChange={(e) => setNu({ ...nu, username: e.target.value })}
+        />
+        <input className="mt" placeholder="Password" value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} />
+        <label className="check">
+          <input type="checkbox" checked={nu.is_admin} onChange={(e) => setNu({ ...nu, is_admin: e.target.checked })} /> Amministratore
+        </label>
+        <button className="primary" disabled={!nu.username || !nu.password}>
+          Crea utente
+        </button>
+      </form>
+      <p className="muted small">Ogni utente ha inventario, manuali e progetti salvati completamente separati.</p>
+    </div>
+  )
+}
+
 /* ---------------- App ---------------- */
 export default function App() {
   const route = useHashTab()
+  const [me, setMe] = useState(undefined)
   const [status, setStatus] = useState(null)
   const [colors, setColors] = useState([])
   const [toast, setToast] = useState(null)
@@ -846,10 +1068,26 @@ export default function App() {
     timer.current = setTimeout(() => setToast(null), error ? 6000 : 3000)
   }, [])
 
+  useEffect(() => {
+    api.get('/api/me').then(setMe).catch(() => setMe(null))
+  }, [])
+  useEffect(() => {
+    const on = () => setMe(null)
+    window.addEventListener('bs-unauthorized', on)
+    return () => window.removeEventListener('bs-unauthorized', on)
+  }, [])
+
+  const logout = async () => {
+    try {
+      await api.post('/api/logout')
+    } catch {}
+    setMe(null)
+  }
+
   const refresh = useCallback(() => api.get('/api/status').then(setStatus).catch(() => {}), [])
   useEffect(() => {
-    refresh()
-  }, [refresh])
+    if (me) refresh()
+  }, [me, refresh])
 
   const catalogReady = status?.catalog?.state === 'ready'
   useEffect(() => {
@@ -862,28 +1100,33 @@ export default function App() {
     if (catalogReady) api.get('/api/colors').then(setColors).catch(() => {})
   }, [catalogReady])
 
+  if (me === undefined) return <div className="splash">🧱</div>
+  if (me === null) return <LoginView onLogin={setMe} />
+
   const [tab, sub] = route
   let view
   if (tab === 'inventory') view = <InventoryView colors={colors} notify={notify} />
   else if (tab === 'projects' && sub) view = <SetDetail setNum={decodeURIComponent(sub)} notify={notify} />
   else if (tab === 'projects') view = <ProjectsView notify={notify} />
   else if (tab === 'manuals') view = <ManualsView notify={notify} />
-  else if (tab === 'settings') view = <SettingsView status={status} refresh={refresh} notify={notify} />
+  else if (tab === 'settings') view = <SettingsView status={status} refresh={refresh} notify={notify} me={me} onLogout={logout} />
+  else if (tab === 'admin' && me.is_admin) view = <AdminView notify={notify} />
   else view = <ScanView colors={colors} notify={notify} catalogReady={catalogReady} />
+
+  const tabs = me.is_admin ? [...TABS, ['admin', 'Admin', '🛠️']] : TABS
 
   return (
     <div className="app">
       <header>
         <span className="logo">🧱 Brick Scanner</span>
-        {status && (
-          <span className="small header-stat">
-            {status.inventory.total} pezzi
-          </span>
-        )}
+        <span className="row gap">
+          {status && <span className="small header-stat">{status.inventory.total} pezzi</span>}
+          <span className="small header-user">{me.username}</span>
+        </span>
       </header>
       <main>{view}</main>
       <nav>
-        {TABS.map(([id, label, icon]) => (
+        {tabs.map(([id, label, icon]) => (
           <button key={id} className={tab === id || (!tab && id === 'scan') ? 'active' : ''} onClick={() => go(id)}>
             <span className="icon">{icon}</span>
             <span className="label">{label}</span>

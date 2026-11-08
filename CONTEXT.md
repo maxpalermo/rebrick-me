@@ -12,22 +12,25 @@ Requisiti aggiuntivi dell'utente:
 - cartella del progetto sul PC dell'utente: `/home/massimiliano/docker/rebrick-me`;
 - l'utente lavora con **Devin Desktop** sul proprio PC, non con Devin cloud.
 
-## Stato attuale: prototipo funzionante (v0.1.0)
+## Stato attuale: v0.2.0 — multi-utente con login
 Testato end-to-end in Docker:
 - scansione di una foto con 3 pezzi: segmentazione OpenCV, poi Brickognize. Codice e colore corretti per tutti e 3;
 - calcolo dei set costruibili su ~28.500 set in meno di 0,2 s;
 - download delle istruzioni da LEGO.com (set 10696: libretto principale + 4 extra) salvate in `data/manuals`;
-- sincronizzazione tra due istanze (inventari sommati senza duplicati, PDF copiati) e backup/ripristino `.zip`.
+- sincronizzazione tra due istanze (inventari sommati senza duplicati, PDF copiati) e backup/ripristino `.zip`;
+- **multi-utente (v0.2.0)**: login con cookie di sessione, un `lego.sqlite` per utente in `data/users/<nome>/` (isolamento totale), `data/admin.db` per utenti/sessioni/token; area admin su `#/admin` (creazione/eliminazione utenti, reset password, statistiche); admin ha anche il proprio inventario; sync tra istanze via `X-Sync-Token` (Impostazioni → Token di sincronizzazione); migrazione automatica del vecchio `data/lego.sqlite` in `users/<ADMIN_USER>/` al primo avvio;
+- foto reali dal telefono testate in produzione: riconoscimento pezzi OK.
 
-Non ancora testato: foto reali scattate col telefono, installazione PWA via HTTPS, chiave Rebrickable reale (MOC alternativi).
+Non ancora testato: installazione PWA via HTTPS, chiave Rebrickable reale (MOC alternativi), peer sync tra istanze con token.
 
 ## Architettura
 Un solo container (`Dockerfile` multi-stage: build Node del frontend + runtime Python 3.12-slim). `docker-compose.yml` espone la porta `${PORT:-8080}` → 8000 e monta il volume `./data:/data`.
 
 ```
 backend/app/
-  config.py    variabili d'ambiente (DATA_DIR, REBRICKABLE_API_KEY, DEVICE_NAME, AUTO_IMPORT_CATALOG...)
-  db.py        schema SQLite utente (lego.sqlite) + ATTACH del catalogo come "cat"; set_quantity() CRDT
+  config.py    variabili d'ambiente (DATA_DIR, REBRICKABLE_API_KEY, DEVICE_NAME, ADMIN_USER/PASSWORD, USERS_DIR...)
+  admin_db.py  admin.db: utenti (pbkdf2), sessioni cookie 30gg, sync_tokens per utente
+  db.py        lego.sqlite per-utente in users/<nome>/ + ATTACH "cat"; set_quantity() CRDT; migrate_legacy()
   catalog.py   download dei dump CSV pubblici Rebrickable -> catalog.sqlite (tabelle set_parts, part_images...)
   scan.py      OpenCV (sfondo stimato dai bordi, distanza Lab, Otsu, contorni) -> crop -> Brickognize /predict/parts/
   manuals.py   scraping dei link PDF dalla pagina lego.com/it-it/service/building-instructions/<num>; upload/URL
@@ -38,9 +41,11 @@ frontend/src/  React 18 + Vite 5, PWA (manifest + sw.js), UI in italiano, naviga
 ```
 
 ### Dati (`./data`)
-- `lego.sqlite`: tabelle `meta` (device_id, device_name), `inventory`, vista `inventory_total`, `manuals`, `saved_projects`, `peers`
-- `catalog.sqlite`: si rigenera dai CSV Rebrickable (al primo avvio o da Impostazioni → Aggiorna catalogo)
-- `manuals/<sha256>.pdf`: file indirizzati per contenuto (deduplicati, sincronizzati per hash)
+- `admin.db`: `users` (username, password_hash pbkdf2, is_admin), `sessions`, `sync_tokens`
+- `users/<nome>/lego.sqlite`: `meta` (device_id, device_name), `inventory`, `inventory_total`, `manuals`, `saved_projects`, `peers`
+- `users/<nome>/manuals/<sha256>.pdf`: file indirizzati per contenuto (deduplicati, sincronizzati per hash)
+- `catalog.sqlite`: condiviso tra utenti, si rigenera dai CSV Rebrickable
+- Produzione: `docker-compose.prod.yml` (porta host 8020, NPM → HTTPS + dominio; la porta 8020 non va esposta pubblicamente)
 
 ### Decisioni chiave
 - **Riconoscimento**: API Brickognize (gratuita, senza chiave). Restituisce ID **BrickLink** di pezzi e colori, mappati a Rebrickable così:
