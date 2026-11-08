@@ -116,6 +116,66 @@ def _encode(img: np.ndarray) -> bytes:
     return buf.tobytes()
 
 
+async def _brickognize_ep(client: httpx.AsyncClient, endpoint: str, jpeg: bytes, top_k: int = 8) -> dict:
+    r = await client.post(
+        f"{BRICKOGNIZE_URL}/predict/{endpoint}/",
+        params={"top_k_items": top_k},
+        files={"query_image": ("image.jpg", jpeg, "image/jpeg")},
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+async def _safe(coro):
+    try:
+        return await coro
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Brickognize call failed: %s", exc)
+        return {"error": str(exc)}
+
+
+def _lookup_set(conn: sqlite3.Connection, sid: str) -> dict | None:
+    for cand in (sid, f"{sid}-1"):
+        row = conn.execute(
+            "SELECT s.set_num, s.name, s.year, s.img_url, s.total_qty, th.name theme "
+            "FROM cat.sets s LEFT JOIN cat.themes th ON th.id=s.theme_id WHERE s.set_num=?",
+            (cand,),
+        ).fetchone()
+        if row:
+            return dict(row)
+    return None
+
+
+async def scan_build_image(conn: sqlite3.Connection, image_bytes: bytes) -> dict:
+    """Recognizes an assembled build/set via Brickognize (/predict/sets + /predict/figs)."""
+    img = _load(image_bytes)
+    jpeg = _encode(img)
+    async with httpx.AsyncClient(timeout=60) as client:
+        sets_res, figs_res = await asyncio.gather(
+            _safe(_brickognize_ep(client, "sets", jpeg, 8)),
+            _safe(_brickognize_ep(client, "figs", jpeg, 4)),
+        )
+    candidates = []
+    for item in (sets_res.get("items") or [])[:8]:
+        hit = _lookup_set(conn, item["id"]) or {}
+        candidates.append({
+            "set_num": hit.get("set_num") or item["id"],
+            "name": hit.get("name") or item.get("name"),
+            "img_url": hit.get("img_url") or item.get("img_url"),
+            "year": hit.get("year"),
+            "theme": hit.get("theme"),
+            "total_qty": hit.get("total_qty"),
+            "in_catalog": bool(hit),
+            "score": round(item.get("score", 0), 3),
+        })
+    figs = [
+        {"id": it["id"], "name": it.get("name"), "img_url": it.get("img_url"),
+         "score": round(it.get("score", 0), 3)}
+        for it in (figs_res.get("items") or [])[:4]
+    ]
+    return {"candidates": candidates, "figs": figs, "error": sets_res.get("error")}
+
+
 async def scan_image(conn: sqlite3.Connection, image_bytes: bytes, segment: bool = True) -> dict:
     img = _load(image_bytes)
     h, w = img.shape[:2]

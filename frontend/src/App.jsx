@@ -628,6 +628,28 @@ function IdentifyView({ colors, notify }) {
   const [partial, setPartial] = useState(false)
   const [res, setRes] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [photo, setPhoto] = useState(null)
+  const [build, setBuild] = useState(null)
+  const [buildBusy, setBuildBusy] = useState(false)
+  const camRef = useRef()
+  const fileRef = useRef()
+
+  const onPhoto = async (file) => {
+    if (!file) return
+    setPhoto(URL.createObjectURL(file))
+    setBuild(null)
+    setRes(null)
+    setBuildBusy(true)
+    const fd = new FormData()
+    fd.append('image', file)
+    try {
+      setBuild(await api.post('/api/scan/build', fd))
+    } catch (e) {
+      notify(e.message, true)
+    } finally {
+      setBuildBusy(false)
+    }
+  }
 
   useEffect(() => {
     try {
@@ -670,12 +692,74 @@ function IdentifyView({ colors, notify }) {
 
   return (
     <div className="view">
-      <h2>🔍 Da quale set viene questo pezzo?</h2>
-      <p className="muted">
-        Aggiungi i pezzi che hai trovato: l'app cerca i set che li contengono tutti. Con 2-3 pezzi distintivi la lista si
-        restringe molto.
-      </p>
+      <h2>🔍 Da quale set viene?</h2>
       <div className="card">
+        <h3>📷 Fotografa una costruzione completa</h3>
+        <p className="muted small">
+          Inquadra il set o la minifigure già montata: l'IA la riconosce e ti dice da quale set proviene.
+        </p>
+        <div className="row gap">
+          <button className="primary big" disabled={buildBusy} onClick={() => camRef.current.click()}>
+            📷 Scatta foto
+          </button>
+          <button className="big" disabled={buildBusy} onClick={() => fileRef.current.click()}>
+            🖼️ Carica immagine
+          </button>
+        </div>
+        <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => onPhoto(e.target.files[0])} />
+        <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => onPhoto(e.target.files[0])} />
+        {photo && (
+          <div className="photo-wrap">
+            <img src={photo} alt="foto costruzione" />
+            {buildBusy && <div className="overlay">Riconoscimento in corso…</div>}
+          </div>
+        )}
+        {build && (
+          <>
+            {build.candidates?.length > 0 ? (
+              <div className="list mt">
+                {build.candidates.map((s) => (
+                  <button
+                    key={s.set_num}
+                    className="card inv"
+                    disabled={!s.in_catalog}
+                    title={s.in_catalog ? '' : 'Set non presente nel catalogo'}
+                    onClick={() => s.in_catalog && go(`projects/${s.set_num}`)}
+                  >
+                    <Img src={s.img_url} className="thumb" />
+                    <div className="grow">
+                      <div className="title">{s.name}</div>
+                      <div className="muted small">
+                        {s.set_num}
+                        {s.year ? ` · ${s.year}` : ''}
+                        {s.theme ? ` · ${s.theme}` : ''}
+                        {s.total_qty ? ` · ${s.total_qty} pezzi` : ''}
+                        {!s.in_catalog ? ' · non in catalogo' : ''}
+                      </div>
+                    </div>
+                    <span className={'badge match ' + (s.score >= 0.5 ? 'full' : '')}>{Math.round(s.score * 100)}%</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="muted mt">Nessun set riconosciuto.</p>
+            )}
+            {build.figs?.length > 0 && (
+              <p className="muted small mt">
+                Potrebbe essere una minifigure:{' '}
+                {build.figs.map((f) => `${f.name} (${Math.round(f.score * 100)}%)`).join(', ')}
+              </p>
+            )}
+            {build.error && <p className="error small">{build.error}</p>}
+          </>
+        )}
+      </div>
+      <div className="card">
+        <h3>🧱 …oppure cerca dai singoli pezzi</h3>
+        <p className="muted small">
+          Aggiungi i pezzi che hai trovato: l'app cerca i set che li contengono tutti. Con 2-3 pezzi distintivi la lista si
+          restringe molto.
+        </p>
         <PartSearch placeholder="Aggiungi un pezzo per nome o codice…" onPick={addPart} />
         {parts.length > 0 && (
           <div className="list mt">

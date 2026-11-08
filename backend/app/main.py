@@ -185,6 +185,20 @@ async def scan_photo(image: UploadFile = File(...), segment: bool = Form(True), 
             raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/scan/build")
+async def scan_build(image: UploadFile = File(...), user: dict = Depends(current_user)):
+    """Recognizes a complete assembled LEGO build/set (and minifigures) from a photo."""
+    data = await image.read()
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(413, "Immagine troppo grande (max 25 MB)")
+    with get_db(user["username"]) as conn:
+        require_catalog(conn)
+        try:
+            return await scan.scan_build_image(conn, data)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
 # ---------- inventory ----------
 INV_SELECT = """
 SELECT t.part_num, t.color_id, t.quantity, t.updated_at,
