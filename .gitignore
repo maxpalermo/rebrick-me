@@ -4,3 +4,5 @@ node_modules/
 frontend/dist/
 __pycache__/
 *.pyc
+
+rebrick-me.code-workspace
