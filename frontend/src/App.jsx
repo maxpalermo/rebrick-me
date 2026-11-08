@@ -952,10 +952,33 @@ function SettingsView({ status, refresh, notify, me, onLogout }) {
   const [name, setName] = useState(status?.device_name || '')
   const restoreRef = useRef()
 
+  const [keyInfo, setKeyInfo] = useState(null)
+  const [rbKey, setRbKey] = useState('')
+
   useEffect(() => {
     api.get('/api/sync/peers').then(setPeers).catch(() => {})
     api.get('/api/settings/sync-token').then((r) => setSyncToken(r.token)).catch(() => {})
+    if (me?.is_admin) api.get('/api/settings/rebrickable-key').then(setKeyInfo).catch(() => {})
   }, [])
+
+  const saveKey = async () => {
+    try {
+      await api.post('/api/settings/rebrickable-key', { key: rbKey.trim() })
+      setRbKey('')
+      setKeyInfo(await api.get('/api/settings/rebrickable-key'))
+      refresh()
+      notify('Chiave salvata')
+    } catch (e) {
+      notify(e.message, true)
+    }
+  }
+
+  const removeKey = async () => {
+    await api.post('/api/settings/rebrickable-key', { key: '' })
+    setKeyInfo(await api.get('/api/settings/rebrickable-key'))
+    refresh()
+    notify('Chiave rimossa')
+  }
   useEffect(() => setName(status?.device_name || ''), [status?.device_name])
 
   const regenToken = async () => {
@@ -1052,7 +1075,10 @@ function SettingsView({ status, refresh, notify, me, onLogout }) {
       <div className="card">
         <h3>Chiave API Rebrickable</h3>
         {status?.rebrickable_key ? (
-          <p>✅ Configurata. Abilita le costruzioni alternative (MOC) e una mappatura più precisa di pezzi e colori.</p>
+          <p>
+            ✅ Configurata{keyInfo?.source === 'ui' ? ` (${keyInfo.masked})` : keyInfo?.source === 'env' ? ' (da .env)' : ''}.
+            Abilita le costruzioni alternative (MOC) e una mappatura più precisa di pezzi e colori.
+          </p>
         ) : (
           <>
             <p>⚠️ Non configurata (opzionale). L'app funziona comunque; con la chiave ottieni anche le costruzioni alternative (MOC).</p>
@@ -1070,11 +1096,26 @@ function SettingsView({ status, refresh, notify, me, onLogout }) {
                 </a>{' '}
                 e clicca “Generate new key”
               </li>
-              <li>
-                Inserisci la chiave nel file <code>.env</code> come <code>REBRICKABLE_API_KEY=...</code> e riavvia il container
-              </li>
+              {!me.is_admin && (
+                <li>
+                  Chiedi all'amministratore di incollare la chiave qui sotto (o nel file <code>.env</code>)
+                </li>
+              )}
             </ol>
           </>
+        )}
+        {me.is_admin && (
+          <div className="row gap mt">
+            <input
+              placeholder={keyInfo?.source === 'ui' ? `Sostituisci la chiave salvata (${keyInfo.masked})` : 'Incolla qui la chiave API'}
+              value={rbKey}
+              onChange={(e) => setRbKey(e.target.value)}
+            />
+            <button className="primary" disabled={!rbKey.trim()} onClick={saveKey}>
+              Salva
+            </button>
+            {keyInfo?.source === 'ui' && <button onClick={removeKey}>Rimuovi</button>}
+          </div>
         )}
       </div>
 

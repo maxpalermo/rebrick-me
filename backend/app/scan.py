@@ -7,7 +7,8 @@ import cv2
 import httpx
 import numpy as np
 
-from .config import BRICKOGNIZE_URL, REBRICKABLE_API_KEY
+from .admin_db import get_rebrickable_key
+from .config import BRICKOGNIZE_URL
 
 log = logging.getLogger("scan")
 MAX_SIDE = 1600
@@ -67,13 +68,14 @@ async def _brickognize(client: httpx.AsyncClient, jpeg: bytes) -> dict:
 
 
 async def _rebrickable_part_by_bricklink(client: httpx.AsyncClient, bl_id: str) -> str | None:
-    if not REBRICKABLE_API_KEY:
+    key = get_rebrickable_key()
+    if not key:
         return None
     try:
         r = await client.get(
             "https://rebrickable.com/api/v3/lego/parts/",
             params={"bricklink_id": bl_id},
-            headers={"Authorization": f"key {REBRICKABLE_API_KEY}"},
+            headers={"Authorization": f"key {key}"},
         )
         r.raise_for_status()
         res = r.json().get("results") or []

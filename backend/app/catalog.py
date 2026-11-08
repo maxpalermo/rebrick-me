@@ -10,7 +10,8 @@ import time
 
 import httpx
 
-from .config import CATALOG_DB, REBRICKABLE_API_KEY, REBRICKABLE_DOWNLOADS
+from .admin_db import get_rebrickable_key
+from .config import CATALOG_DB, REBRICKABLE_DOWNLOADS
 
 log = logging.getLogger("catalog")
 
@@ -65,13 +66,14 @@ def _int(v: str):
 
 
 def _fetch_bricklink_color_ids(client: httpx.Client) -> dict[int, int]:
-    if not REBRICKABLE_API_KEY:
+    key = get_rebrickable_key()
+    if not key:
         return {}
     try:
         r = client.get(
             "https://rebrickable.com/api/v3/lego/colors/",
             params={"page_size": 1000},
-            headers={"Authorization": f"key {REBRICKABLE_API_KEY}"},
+            headers={"Authorization": f"key {key}"},
         )
         r.raise_for_status()
         mapping = {}

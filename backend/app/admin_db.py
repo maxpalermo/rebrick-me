@@ -6,7 +6,7 @@ import secrets
 import sqlite3
 import time
 
-from .config import ADMIN_DB, ADMIN_PASSWORD, ADMIN_USER
+from .config import ADMIN_DB, ADMIN_PASSWORD, ADMIN_USER, REBRICKABLE_API_KEY
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS sync_tokens (
     username TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 """
 
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
@@ -184,3 +185,23 @@ def regenerate_sync_token(username: str) -> str:
     with _connect() as conn:
         conn.execute("DELETE FROM sync_tokens WHERE username=?", (username,))
     return get_sync_token(username)
+
+
+# ---------- site settings ----------
+def get_setting(key: str, default: str = "") -> str:
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+
+def get_rebrickable_key() -> str:
+    """Rebrickable API key saved via the admin UI, falling back to the env var."""
+    return get_setting("rebrickable_api_key") or REBRICKABLE_API_KEY

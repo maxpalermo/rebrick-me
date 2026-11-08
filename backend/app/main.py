@@ -128,7 +128,7 @@ def status(user: dict = Depends(current_user)):
         info = {
             "device_id": device_id(conn),
             "device_name": device_name(conn),
-            "rebrickable_key": bool(REBRICKABLE_API_KEY),
+            "rebrickable_key": bool(admin_db.get_rebrickable_key()),
             "catalog": dict(catalog.status),
             "inventory": {"distinct": 0, "total": 0},
         }
@@ -394,12 +394,13 @@ def sets_identify(data: dict = Body(...), user: dict = Depends(current_user)):
 
 @app.get("/api/sets/{set_num}/alternates")
 async def set_alternates(set_num: str, user: dict = Depends(current_user)):
-    """Alternative builds (MOCs) from Rebrickable. Requires REBRICKABLE_API_KEY."""
-    if not REBRICKABLE_API_KEY:
+    """Alternative builds (MOCs) from Rebrickable. Requires a Rebrickable API key."""
+    key = admin_db.get_rebrickable_key()
+    if not key:
         return {"available": False, "results": []}
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(f"https://rebrickable.com/api/v3/lego/sets/{set_num}/alternates/",
-                             headers={"Authorization": f"key {REBRICKABLE_API_KEY}"}, params={"page_size": 50})
+                             headers={"Authorization": f"key {key}"}, params={"page_size": 50})
         if r.status_code == 404:
             return {"available": True, "results": []}
         if r.status_code in (401, 403):
@@ -588,6 +589,23 @@ def set_device_name(name: str = Body(..., embed=True), user: dict = Depends(curr
     with get_db(user["username"]) as conn:
         conn.execute("INSERT OR REPLACE INTO meta VALUES ('device_name', ?)", (name.strip()[:60],))
     return {"ok": True}
+
+
+@app.get("/api/settings/rebrickable-key")
+def rebrickable_key_get(admin: dict = Depends(require_admin)):
+    stored = admin_db.get_setting("rebrickable_api_key")
+    key = admin_db.get_rebrickable_key()
+    return {
+        "configured": bool(key),
+        "source": "ui" if stored else ("env" if key else None),
+        "masked": f"{key[:4]}…{key[-4:]}" if key and len(key) > 8 else "",
+    }
+
+
+@app.post("/api/settings/rebrickable-key")
+def rebrickable_key_set(data: dict = Body(...), admin: dict = Depends(require_admin)):
+    admin_db.set_setting("rebrickable_api_key", (data.get("key") or "").strip())
+    return {"ok": True, "configured": bool(admin_db.get_rebrickable_key())}
 
 
 @app.get("/api/settings/sync-token")
